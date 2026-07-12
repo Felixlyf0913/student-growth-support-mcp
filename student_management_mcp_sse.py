@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.error
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -63,6 +65,25 @@ def count_by(items: list[dict[str, Any]], field: str) -> dict[str, int]:
         key = str(item.get(field, "") or "未填写")
         counts[key] = counts.get(key, 0) + 1
     return dict(sorted(counts.items(), key=lambda row: (-row[1], row[0])))
+
+
+def post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            body = response.read().decode("utf-8")
+            return json.loads(body)
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"钉钉机器人返回异常：HTTP {exc.code} {body}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"钉钉机器人连接失败：{exc.reason}") from exc
 
 
 def score_attention(item: dict[str, Any]) -> int:
@@ -331,6 +352,49 @@ def get_roster_dashboard(scope: str = "数字技术学院") -> dict[str, Any]:
             for name, count in list(class_counts.items())[:10]
         ],
         "note": "该看板基于演示版真实学生名册生成，用于院系学生基础数据核验和展示。",
+    }
+
+
+@mcp.tool()
+def send_dingtalk_notice(
+    title: str,
+    content: str,
+    target: str = "班级群",
+    notice_type: str = "班级通知",
+) -> dict[str, Any]:
+    """把智能体生成的班级通知、帮扶提醒或待办事项推送到钉钉群机器人。"""
+    webhook = os.environ.get("DINGTALK_ROBOT_WEBHOOK", "").strip()
+    if not webhook:
+        raise ValueError("未配置 DINGTALK_ROBOT_WEBHOOK 环境变量，暂不能推送钉钉消息。")
+
+    safe_title = title.strip() or "通知"
+    safe_content = content.strip()
+    if not safe_content:
+        raise ValueError("推送内容不能为空。")
+
+    keyword = os.environ.get("DINGTALK_KEYWORD", "校策通枢").strip() or "校策通枢"
+    message = (
+        f"## {keyword}｜{notice_type}：{safe_title}\n\n"
+        f"**接收对象：** {target}\n\n"
+        f"{safe_content}\n\n"
+        f"> 本消息由校策通枢智能体生成，请相关老师结合实际情况核对后执行。"
+    )
+    payload = {
+        "msgtype": "markdown",
+        "markdown": {
+            "title": f"{keyword}｜{safe_title}",
+            "text": message,
+        },
+    }
+    result = post_json(webhook, payload)
+    ok = result.get("errcode") == 0
+    return {
+        "sent": ok,
+        "target": target,
+        "notice_type": notice_type,
+        "title": safe_title,
+        "dingtalk_result": result,
+        "note": "消息已自动包含钉钉安全关键词。",
     }
 
 
