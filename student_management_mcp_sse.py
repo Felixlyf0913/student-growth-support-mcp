@@ -16,6 +16,7 @@ from starlette.routing import Mount, Route
 BASE_DIR = Path(__file__).resolve().parent
 STUDENT_FILE = BASE_DIR / "student_records.json"
 FOLLOWUP_FILE = BASE_DIR / "followup_records.json"
+ROSTER_FILE = BASE_DIR / "roster_students.json"
 
 
 def load_json(path: Path) -> Any:
@@ -34,12 +35,34 @@ def followups() -> list[dict[str, Any]]:
     return load_json(FOLLOWUP_FILE)
 
 
+def roster_students() -> list[dict[str, Any]]:
+    if not ROSTER_FILE.exists():
+        return []
+    return load_json(ROSTER_FILE)
+
+
 def find_student(query: str) -> dict[str, Any]:
     query = query.strip()
     for item in students():
         if item["student_id"] == query or item["name"] == query:
             return item
     raise ValueError(f"未找到学生：{query}")
+
+
+def find_roster_student(query: str) -> dict[str, Any]:
+    query = query.strip()
+    for item in roster_students():
+        if item["student_id"] == query or item["name"] == query:
+            return item
+    raise ValueError(f"未在真实名册中找到学生：{query}")
+
+
+def count_by(items: list[dict[str, Any]], field: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items:
+        key = str(item.get(field, "") or "未填写")
+        counts[key] = counts.get(key, 0) + 1
+    return dict(sorted(counts.items(), key=lambda row: (-row[1], row[0])))
 
 
 def score_attention(item: dict[str, Any]) -> int:
@@ -226,6 +249,88 @@ def get_class_dashboard(class_name: str) -> dict[str, Any]:
             key=lambda row: {"高关注": 3, "中关注": 2, "低关注": 1}[row["level"]],
             reverse=True,
         ),
+    }
+
+
+@mcp.tool()
+def get_roster_student(query: str) -> dict[str, Any]:
+    """按学号或姓名查询真实学生名册中的基础画像。"""
+    item = find_roster_student(query)
+    classmates = [
+        row for row in roster_students()
+        if row["class_name"] == item["class_name"]
+    ]
+    return {
+        "student": item,
+        "class_size": len(classmates),
+        "class_gender_distribution": count_by(classmates, "gender"),
+        "note": "该结果来自演示版真实学生名册，手机号字段为已脱敏号码。",
+    }
+
+
+@mcp.tool()
+def list_class_roster(class_name: str) -> dict[str, Any]:
+    """按班级查询真实名册，返回学生列表和班级基础统计。"""
+    rows = [
+        item for item in roster_students()
+        if item["class_name"] == class_name
+    ]
+    if not rows:
+        raise ValueError(f"未在真实名册中找到班级：{class_name}")
+    return {
+        "class_name": class_name,
+        "student_count": len(rows),
+        "gender_distribution": count_by(rows, "gender"),
+        "major_distribution": count_by(rows, "major"),
+        "grade_distribution": count_by(rows, "grade"),
+        "students": sorted(
+            [
+                {
+                    "student_id": item["student_id"],
+                    "name": item["name"],
+                    "gender": item["gender"],
+                    "major": item["major"],
+                    "grade": item["grade"],
+                    "phone_masked": item["phone_masked"],
+                }
+                for item in rows
+            ],
+            key=lambda row: row["student_id"],
+        ),
+        "note": "该结果来自演示版真实学生名册，手机号字段为已脱敏号码。",
+    }
+
+
+@mcp.tool()
+def get_roster_dashboard(scope: str = "数字技术学院") -> dict[str, Any]:
+    """生成真实名册的学院、年级、专业、班级基础分布看板。"""
+    rows = roster_students()
+    if scope:
+        scoped = [
+            item for item in rows
+            if scope in item["college"]
+            or scope in item["major"]
+            or scope in item["grade"]
+            or scope in item["class_name"]
+        ]
+    else:
+        scoped = rows
+    if not scoped:
+        raise ValueError(f"未在真实名册中找到范围：{scope}")
+    class_counts = count_by(scoped, "class_name")
+    return {
+        "scope": scope or "全部",
+        "student_count": len(scoped),
+        "college_distribution": count_by(scoped, "college"),
+        "grade_distribution": count_by(scoped, "grade"),
+        "major_distribution": count_by(scoped, "major"),
+        "gender_distribution": count_by(scoped, "gender"),
+        "class_distribution": class_counts,
+        "top_classes": [
+            {"class_name": name, "student_count": count}
+            for name, count in list(class_counts.items())[:10]
+        ],
+        "note": "该看板基于演示版真实学生名册生成，用于院系学生基础数据核验和展示。",
     }
 
 
