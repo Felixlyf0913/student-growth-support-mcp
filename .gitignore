@@ -1,0 +1,3 @@
+.venv-mcp/
+__pycache__/
+*.pyc

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "student-growth-support": {
+      "type": "sse",
+      "url": "https://your-render-service.onrender.com/sse"
+    }
+  }
+}
