@@ -86,6 +86,24 @@ def post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError(f"钉钉机器人连接失败：{exc.reason}") from exc
 
 
+def send_dingtalk_markdown(title: str, text: str, mention_all: bool = False) -> dict[str, Any]:
+    webhook = os.environ.get("DINGTALK_ROBOT_WEBHOOK", "").strip()
+    if not webhook:
+        raise ValueError("未配置 DINGTALK_ROBOT_WEBHOOK 环境变量，暂不能推送钉钉消息。")
+    keyword = os.environ.get("DINGTALK_KEYWORD", "MCP").strip() or "MCP"
+    payload = {
+        "msgtype": "markdown",
+        "markdown": {
+            "title": f"{keyword}｜{title}",
+            "text": text,
+        },
+        "at": {
+            "isAtAll": mention_all,
+        },
+    }
+    return post_json(webhook, payload)
+
+
 def score_attention(item: dict[str, Any]) -> int:
     score = 0
     score += min(int(item["attendance_absences_30d"]), 5) * 2
@@ -364,10 +382,6 @@ def send_dingtalk_notice(
     mention_all: bool = False,
 ) -> dict[str, Any]:
     """把通知推送到钉钉群；用户明确要求时可通过 mention_all 提醒全体成员。"""
-    webhook = os.environ.get("DINGTALK_ROBOT_WEBHOOK", "").strip()
-    if not webhook:
-        raise ValueError("未配置 DINGTALK_ROBOT_WEBHOOK 环境变量，暂不能推送钉钉消息。")
-
     safe_title = title.strip() or "通知"
     safe_content = content.strip()
     if not safe_content:
@@ -380,17 +394,7 @@ def send_dingtalk_notice(
         f"{safe_content}\n\n"
         f"> 本消息由校策通枢智能体生成，请相关老师结合实际情况核对后执行。"
     )
-    payload = {
-        "msgtype": "markdown",
-        "markdown": {
-            "title": f"{keyword}｜{safe_title}",
-            "text": message,
-        },
-        "at": {
-            "isAtAll": mention_all,
-        },
-    }
-    result = post_json(webhook, payload)
+    result = send_dingtalk_markdown(safe_title, message, mention_all)
     ok = result.get("errcode") == 0
     return {
         "sent": ok,
@@ -400,6 +404,83 @@ def send_dingtalk_notice(
         "mention_all": mention_all,
         "dingtalk_result": result,
         "note": "消息已自动包含钉钉安全关键词。" + ("已提醒全体成员。" if mention_all else ""),
+    }
+
+
+@mcp.tool()
+def generate_and_send_class_weekly_report(
+    class_name: str,
+    target: str = "辅导员工作群",
+    week_label: str = "本周",
+    mention_all: bool = False,
+) -> dict[str, Any]:
+    """生成隐去学生姓名的班级工作周报并推送钉钉，适合辅导员或班委工作群。"""
+    roster = [item for item in roster_students() if item["class_name"] == class_name]
+    risk_rows = [item for item in students() if item["class_name"] == class_name]
+    if not roster and not risk_rows:
+        raise ValueError(f"未找到班级：{class_name}")
+
+    roster_count = len(roster) if roster else len(risk_rows)
+    gender_distribution = count_by(roster, "gender") if roster else {}
+    major_distribution = count_by(roster, "major") if roster else count_by(risk_rows, "major")
+    grade_distribution = count_by(roster, "grade") if roster else count_by(risk_rows, "grade")
+    attention_levels = {"低关注": 0, "中关注": 0, "高关注": 0}
+    for item in risk_rows:
+        attention_levels[level_from_score(score_attention(item))] += 1
+
+    student_ids = {item["student_id"] for item in risk_rows}
+    class_followups = [record for record in followups() if record["student_id"] in student_ids]
+    absence_total = sum(int(item["attendance_absences_30d"]) for item in risk_rows)
+    late_total = sum(int(item["late_count_30d"]) for item in risk_rows)
+    training_missing = sum(int(item["training_log_missing"]) for item in risk_rows)
+    training_issues = sum(int(item["training_issue_count"]) for item in risk_rows)
+    keyword = os.environ.get("DINGTALK_KEYWORD", "MCP").strip() or "MCP"
+
+    def format_distribution(data: dict[str, int]) -> str:
+        return "、".join(f"{name}{count}人" for name, count in data.items()) or "暂无数据"
+
+    dynamic_summary = (
+        f"- 关注情况：高关注{attention_levels['高关注']}人、中关注{attention_levels['中关注']}人、"
+        f"低关注{attention_levels['低关注']}人\n"
+        f"- 近30天考勤：缺勤{absence_total}次、迟到{late_total}次\n"
+        f"- 实训情况：日志缺项{training_missing}次、异常记录{training_issues}次\n"
+        f"- 帮扶跟进：累计{len(class_followups)}条记录"
+        if risk_rows
+        else "- 动态风险、考勤、实训及帮扶数据尚未接入该班级，本期仅展示名册基础态势"
+    )
+    title = f"{class_name}{week_label}学生工作周报"
+    report = (
+        f"## {keyword}｜班级周报：{title}\n\n"
+        f"**接收对象：** {target}\n\n"
+        f"### 一、班级基础态势\n"
+        f"- 在册学生：{roster_count}人\n"
+        f"- 性别分布：{format_distribution(gender_distribution)}\n"
+        f"- 专业分布：{format_distribution(major_distribution)}\n"
+        f"- 年级分布：{format_distribution(grade_distribution)}\n\n"
+        f"### 二、学生工作动态\n{dynamic_summary}\n\n"
+        f"### 三、下周工作建议\n"
+        f"1. 核对考勤、实训日志和重点事项完成情况；\n"
+        f"2. 对需关注学生开展分级沟通，敏感信息仅在授权范围内流转；\n"
+        f"3. 更新帮扶记录和复访待办，形成闭环留痕。\n\n"
+        f"> 本周报由校策通枢根据当前已接入数据自动生成，未展示学生姓名等敏感明细，请辅导员结合实际情况复核。"
+    )
+    result = send_dingtalk_markdown(title, report, mention_all)
+    return {
+        "sent": result.get("errcode") == 0,
+        "class_name": class_name,
+        "target": target,
+        "week_label": week_label,
+        "mention_all": mention_all,
+        "summary": {
+            "student_count": roster_count,
+            "gender_distribution": gender_distribution,
+            "major_distribution": major_distribution,
+            "grade_distribution": grade_distribution,
+            "attention_levels": attention_levels if risk_rows else None,
+            "followup_count": len(class_followups),
+        },
+        "privacy": "公开周报未展示学生姓名和个人风险明细。",
+        "dingtalk_result": result,
     }
 
 
