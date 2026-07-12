@@ -372,7 +372,7 @@ def send_dingtalk_notice(
     if not safe_content:
         raise ValueError("推送内容不能为空。")
 
-    keyword = os.environ.get("DINGTALK_KEYWORD", "校策通枢").strip() or "校策通枢"
+    keyword = os.environ.get("DINGTALK_KEYWORD", "MCP").strip() or "MCP"
     message = (
         f"## {keyword}｜{notice_type}：{safe_title}\n\n"
         f"**接收对象：** {target}\n\n"
