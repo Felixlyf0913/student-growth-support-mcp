@@ -361,8 +361,9 @@ def send_dingtalk_notice(
     content: str,
     target: str = "班级群",
     notice_type: str = "班级通知",
+    mention_all: bool = False,
 ) -> dict[str, Any]:
-    """把智能体生成的班级通知、帮扶提醒或待办事项推送到钉钉群机器人。"""
+    """把通知推送到钉钉群；用户明确要求时可通过 mention_all 提醒全体成员。"""
     webhook = os.environ.get("DINGTALK_ROBOT_WEBHOOK", "").strip()
     if not webhook:
         raise ValueError("未配置 DINGTALK_ROBOT_WEBHOOK 环境变量，暂不能推送钉钉消息。")
@@ -385,6 +386,9 @@ def send_dingtalk_notice(
             "title": f"{keyword}｜{safe_title}",
             "text": message,
         },
+        "at": {
+            "isAtAll": mention_all,
+        },
     }
     result = post_json(webhook, payload)
     ok = result.get("errcode") == 0
@@ -393,8 +397,9 @@ def send_dingtalk_notice(
         "target": target,
         "notice_type": notice_type,
         "title": safe_title,
+        "mention_all": mention_all,
         "dingtalk_result": result,
-        "note": "消息已自动包含钉钉安全关键词。",
+        "note": "消息已自动包含钉钉安全关键词。" + ("已提醒全体成员。" if mention_all else ""),
     }
 
 
