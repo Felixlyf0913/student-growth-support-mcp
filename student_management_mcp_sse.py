@@ -86,10 +86,40 @@ def post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError(f"钉钉机器人连接失败：{exc.reason}") from exc
 
 
-def send_dingtalk_markdown(title: str, text: str, mention_all: bool = False) -> dict[str, Any]:
-    webhook = os.environ.get("DINGTALK_ROBOT_WEBHOOK", "").strip()
+def resolve_dingtalk_webhook(target: str) -> tuple[str, str]:
+    normalized = target.strip().lower()
+    if any(keyword in normalized for keyword in ("辅导员", "教师", "老师", "teacher")):
+        candidates = (
+            ("教师工作群", "DINGTALK_TEACHER_WEBHOOK"),
+            ("默认群", "DINGTALK_ROBOT_WEBHOOK"),
+        )
+    elif any(keyword in normalized for keyword in ("s604124", "班级群", "学生群")):
+        candidates = (
+            ("S604124班级群", "DINGTALK_S604124_WEBHOOK"),
+            ("默认群", "DINGTALK_ROBOT_WEBHOOK"),
+        )
+    else:
+        candidates = (
+            ("默认群", "DINGTALK_ROBOT_WEBHOOK"),
+            ("教师工作群", "DINGTALK_TEACHER_WEBHOOK"),
+            ("S604124班级群", "DINGTALK_S604124_WEBHOOK"),
+        )
+    for channel, variable in candidates:
+        webhook = os.environ.get(variable, "").strip()
+        if webhook:
+            return channel, webhook
+    raise ValueError(f"未找到接收对象“{target}”对应的钉钉 Webhook 环境变量。")
+
+
+def send_dingtalk_markdown(
+    title: str,
+    text: str,
+    target: str,
+    mention_all: bool = False,
+) -> tuple[str, dict[str, Any]]:
+    channel, webhook = resolve_dingtalk_webhook(target)
     if not webhook:
-        raise ValueError("未配置 DINGTALK_ROBOT_WEBHOOK 环境变量，暂不能推送钉钉消息。")
+        raise ValueError("未配置钉钉机器人 Webhook 环境变量，暂不能推送钉钉消息。")
     keyword = os.environ.get("DINGTALK_KEYWORD", "MCP").strip() or "MCP"
     payload = {
         "msgtype": "markdown",
@@ -101,7 +131,7 @@ def send_dingtalk_markdown(title: str, text: str, mention_all: bool = False) -> 
             "isAtAll": mention_all,
         },
     }
-    return post_json(webhook, payload)
+    return channel, post_json(webhook, payload)
 
 
 def score_attention(item: dict[str, Any]) -> int:
@@ -394,11 +424,12 @@ def send_dingtalk_notice(
         f"{safe_content}\n\n"
         f"> 本消息由校策通枢智能体生成，请相关老师结合实际情况核对后执行。"
     )
-    result = send_dingtalk_markdown(safe_title, message, mention_all)
+    channel, result = send_dingtalk_markdown(safe_title, message, target, mention_all)
     ok = result.get("errcode") == 0
     return {
         "sent": ok,
         "target": target,
+        "channel": channel,
         "notice_type": notice_type,
         "title": safe_title,
         "mention_all": mention_all,
@@ -464,11 +495,12 @@ def generate_and_send_class_weekly_report(
         f"3. 更新帮扶记录和复访待办，形成闭环留痕。\n\n"
         f"> 本周报由校策通枢根据当前已接入数据自动生成，未展示学生姓名等敏感明细，请辅导员结合实际情况复核。"
     )
-    result = send_dingtalk_markdown(title, report, mention_all)
+    channel, result = send_dingtalk_markdown(title, report, target, mention_all)
     return {
         "sent": result.get("errcode") == 0,
         "class_name": class_name,
         "target": target,
+        "channel": channel,
         "week_label": week_label,
         "mention_all": mention_all,
         "summary": {
