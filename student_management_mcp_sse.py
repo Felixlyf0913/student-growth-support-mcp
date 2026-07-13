@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from datetime import datetime
@@ -86,16 +87,29 @@ def post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError(f"钉钉机器人连接失败：{exc.reason}") from exc
 
 
-def resolve_dingtalk_webhook(target: str) -> tuple[str, str]:
+def resolve_dingtalk_webhook(target: str, recipient_role: str = "auto") -> tuple[str, str]:
     normalized = target.strip().lower()
-    if any(keyword in normalized for keyword in ("辅导员", "教师", "老师", "teacher")):
+    normalized_role = recipient_role.strip().lower()
+    class_match = re.search(r"([a-z]\d{6})", normalized)
+    class_code = class_match.group(1).upper() if class_match else ""
+    class_candidates: list[tuple[str, str]] = []
+    if class_code:
+        class_candidates = [
+            (f"{class_code}班级群", f"DINGTALK_CLASS_{class_code}_WEBHOOK"),
+            (f"{class_code}班级群", f"DINGTALK_{class_code}_WEBHOOK"),
+        ]
+
+    if normalized_role in ("teacher", "counselor", "教师", "辅导员") or any(
+        keyword in normalized for keyword in ("辅导员", "教师", "老师", "teacher")
+    ):
         candidates = (
             ("教师工作群", "DINGTALK_TEACHER_WEBHOOK"),
             ("默认群", "DINGTALK_ROBOT_WEBHOOK"),
         )
-    elif any(keyword in normalized for keyword in ("s604124", "班级群", "学生群")):
-        candidates = (
-            ("S604124班级群", "DINGTALK_S604124_WEBHOOK"),
+    elif normalized_role in ("student", "学生") or class_code or any(
+        keyword in normalized for keyword in ("班级群", "学生群")
+    ):
+        candidates = tuple(class_candidates) + (
             ("默认群", "DINGTALK_ROBOT_WEBHOOK"),
         )
     else:
@@ -111,23 +125,42 @@ def resolve_dingtalk_webhook(target: str) -> tuple[str, str]:
     raise ValueError(f"未找到接收对象“{target}”对应的钉钉 Webhook 环境变量。")
 
 
+def normalize_at_mobiles(at_mobiles: list[str] | None) -> list[str]:
+    normalized: list[str] = []
+    for mobile in at_mobiles or []:
+        digits = re.sub(r"\D", "", mobile)
+        if "*" in mobile or len(digits) != 11:
+            raise ValueError("定向提醒必须使用完整的11位手机号，脱敏号码不能用于钉钉@。")
+        if digits not in normalized:
+            normalized.append(digits)
+    if len(normalized) > 20:
+        raise ValueError("单次定向提醒最多支持20个手机号。")
+    return normalized
+
+
 def send_dingtalk_markdown(
     title: str,
     text: str,
     target: str,
+    recipient_role: str = "auto",
+    at_mobiles: list[str] | None = None,
     mention_all: bool = False,
 ) -> tuple[str, dict[str, Any]]:
-    channel, webhook = resolve_dingtalk_webhook(target)
+    channel, webhook = resolve_dingtalk_webhook(target, recipient_role)
     if not webhook:
         raise ValueError("未配置钉钉机器人 Webhook 环境变量，暂不能推送钉钉消息。")
     keyword = os.environ.get("DINGTALK_KEYWORD", "MCP").strip() or "MCP"
+    mobiles = normalize_at_mobiles(at_mobiles)
+    mention_text = " ".join(f"@{mobile}" for mobile in mobiles)
+    rendered_text = f"{text}\n\n{mention_text}" if mention_text else text
     payload = {
         "msgtype": "markdown",
         "markdown": {
             "title": f"{keyword}｜{title}",
-            "text": text,
+            "text": rendered_text,
         },
         "at": {
+            "atMobiles": mobiles,
             "isAtAll": mention_all,
         },
     }
@@ -409,9 +442,11 @@ def send_dingtalk_notice(
     content: str,
     target: str = "班级群",
     notice_type: str = "班级通知",
+    recipient_role: str = "auto",
+    at_mobiles: list[str] | None = None,
     mention_all: bool = False,
 ) -> dict[str, Any]:
-    """把通知推送到钉钉群；用户明确要求时可通过 mention_all 提醒全体成员。"""
+    """按学生/教师/班级自动选择钉钉群；可按完整手机号定向@，或明确要求时@全体。"""
     safe_title = title.strip() or "通知"
     safe_content = content.strip()
     if not safe_content:
@@ -424,15 +459,25 @@ def send_dingtalk_notice(
         f"{safe_content}\n\n"
         f"> 本消息由校策通枢智能体生成，请相关老师结合实际情况核对后执行。"
     )
-    channel, result = send_dingtalk_markdown(safe_title, message, target, mention_all)
+    mobiles = normalize_at_mobiles(at_mobiles)
+    channel, result = send_dingtalk_markdown(
+        safe_title,
+        message,
+        target,
+        recipient_role,
+        mobiles,
+        mention_all,
+    )
     ok = result.get("errcode") == 0
     return {
         "sent": ok,
         "target": target,
         "channel": channel,
         "notice_type": notice_type,
+        "recipient_role": recipient_role,
         "title": safe_title,
         "mention_all": mention_all,
+        "mention_count": len(mobiles),
         "dingtalk_result": result,
         "note": "消息已自动包含钉钉安全关键词。" + ("已提醒全体成员。" if mention_all else ""),
     }
@@ -495,7 +540,14 @@ def generate_and_send_class_weekly_report(
         f"3. 更新帮扶记录和复访待办，形成闭环留痕。\n\n"
         f"> 本周报由校策通枢根据当前已接入数据自动生成，未展示学生姓名等敏感明细，请辅导员结合实际情况复核。"
     )
-    channel, result = send_dingtalk_markdown(title, report, target, mention_all)
+    channel, result = send_dingtalk_markdown(
+        title,
+        report,
+        target,
+        "teacher",
+        None,
+        mention_all,
+    )
     return {
         "sent": result.get("errcode") == 0,
         "class_name": class_name,
