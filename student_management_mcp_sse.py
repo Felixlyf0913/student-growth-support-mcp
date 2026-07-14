@@ -5,6 +5,7 @@ import os
 import re
 import urllib.error
 import urllib.request
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -15,12 +16,17 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
+from persistent_store import PersistentStore
+
 
 BASE_DIR = Path(__file__).resolve().parent
 STUDENT_FILE = BASE_DIR / "student_records.json"
 FOLLOWUP_FILE = BASE_DIR / "followup_records.json"
 ROSTER_FILE = BASE_DIR / "roster_students.json"
 SUPPORT_TASK_FILE = BASE_DIR / "support_tasks.json"
+SQLITE_FILE = BASE_DIR / ".data" / "student_management.db"
+
+STORE = PersistentStore(sqlite_path=SQLITE_FILE)
 
 SUPPORT_TASK_STATUSES = ("待处理", "跟进中", "已完成", "已关闭")
 
@@ -29,16 +35,12 @@ def load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def save_json(path: Path, data: Any) -> None:
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
 def students() -> list[dict[str, Any]]:
     return load_json(STUDENT_FILE)
 
 
 def followups() -> list[dict[str, Any]]:
-    return load_json(FOLLOWUP_FILE)
+    return STORE.list_records("followups")
 
 
 def roster_students() -> list[dict[str, Any]]:
@@ -48,9 +50,20 @@ def roster_students() -> list[dict[str, Any]]:
 
 
 def support_tasks() -> list[dict[str, Any]]:
-    if not SUPPORT_TASK_FILE.exists():
-        return []
-    return load_json(SUPPORT_TASK_FILE)
+    return STORE.list_records("support_tasks")
+
+
+def initialize_storage_from_legacy_json() -> None:
+    if STORE.get_metadata("legacy_json_seed_version"):
+        return
+    if not followups() and FOLLOWUP_FILE.exists():
+        STORE.replace_records("followups", load_json(FOLLOWUP_FILE), "record_id")
+    if not support_tasks() and SUPPORT_TASK_FILE.exists():
+        STORE.replace_records("support_tasks", load_json(SUPPORT_TASK_FILE), "task_id")
+    STORE.set_metadata("legacy_json_seed_version", "1")
+
+
+initialize_storage_from_legacy_json()
 
 
 def find_student(query: str) -> dict[str, Any]:
@@ -338,7 +351,6 @@ def create_followup_record(
 ) -> dict[str, Any]:
     """写入一条谈心谈话或帮扶跟进记录，形成学生管理闭环。"""
     find_student(student_id)
-    data = followups()
     record = {
         "record_id": f"F{datetime.now().strftime('%Y%m%d%H%M%S')}",
         "student_id": student_id,
@@ -348,8 +360,7 @@ def create_followup_record(
         "next_action": next_action,
         "status": status,
     }
-    data.append(record)
-    save_json(FOLLOWUP_FILE, data)
+    STORE.upsert_record("followups", record["record_id"], record)
     return {"created": record}
 
 
@@ -358,6 +369,7 @@ def create_student_support_task(
     student_query: str,
     owner: str,
     due_date: str,
+    created_by: str = "当前操作人",
     objective: str = "",
     measures: list[str] | None = None,
     priority: str = "自动",
@@ -370,6 +382,7 @@ def create_student_support_task(
     safe_owner = owner.strip()
     if not safe_owner:
         raise ValueError("帮扶任务必须指定负责人。")
+    safe_created_by = created_by.strip() or "当前操作人"
     safe_due_date = normalize_due_date(due_date)
     score = score_attention(student)
     level = level_from_score(score)
@@ -400,6 +413,7 @@ def create_student_support_task(
         "objective": safe_objective,
         "measures": safe_measures,
         "owner": safe_owner,
+        "created_by": safe_created_by,
         "due_date": safe_due_date,
         "status": "待处理",
         "created_at": now.strftime("%Y-%m-%d %H:%M"),
@@ -450,9 +464,21 @@ def create_student_support_task(
             notification["error"] = str(exc)
 
     task["notification"] = notification
-    data = support_tasks()
-    data.append(task)
-    save_json(SUPPORT_TASK_FILE, data)
+    STORE.upsert_record("support_tasks", task["task_id"], task)
+    STORE.append_audit(
+        task_id=task["task_id"],
+        action="created",
+        actor=task["created_by"],
+        before_status="",
+        after_status=task["status"],
+        details={
+            "student_id": task["student_id"],
+            "priority": task["priority"],
+            "due_date": task["due_date"],
+            "notification_requested": notification["requested"],
+            "notification_sent": notification["sent"],
+        },
+    )
     return {"created": True, "task": task, "notification": notification}
 
 
@@ -464,6 +490,7 @@ def update_student_support_task(
     next_action: str = "",
     owner: str = "",
     due_date: str = "",
+    updated_by: str = "当前操作人",
     sync_followup: bool = False,
     push_update: bool = False,
     target: str = "辅导员工作群",
@@ -472,11 +499,13 @@ def update_student_support_task(
     """更新帮扶任务状态和进展；可同步写入帮扶记录并按明确要求推送进展。"""
     data = support_tasks()
     task = find_support_task(task_id, data)
+    before_task = deepcopy(task)
     safe_status = status.strip()
     safe_progress = progress_note.strip()
     safe_next_action = next_action.strip()
     safe_owner = owner.strip()
     safe_due_date = due_date.strip()
+    safe_updated_by = updated_by.strip() or "当前操作人"
     if not any((safe_status, safe_progress, safe_next_action, safe_owner, safe_due_date)):
         raise ValueError("请至少提供一项需要更新的任务信息。")
     if safe_status and safe_status not in SUPPORT_TASK_STATUSES:
@@ -501,15 +530,16 @@ def update_student_support_task(
             {
                 "recorded_at": now.strftime("%Y-%m-%d %H:%M"),
                 "owner": task["owner"],
+                "recorded_by": safe_updated_by,
                 "progress_note": safe_progress,
                 "next_action": safe_next_action,
             }
         )
     task["updated_at"] = now.strftime("%Y-%m-%d %H:%M")
+    task["last_updated_by"] = safe_updated_by
 
     followup_record = None
     if sync_followup:
-        records = followups()
         followup_record = {
             "record_id": f"F{now.strftime('%Y%m%d%H%M%S%f')}",
             "student_id": task["student_id"],
@@ -520,8 +550,7 @@ def update_student_support_task(
             "status": task["status"],
             "task_id": task["task_id"],
         }
-        records.append(followup_record)
-        save_json(FOLLOWUP_FILE, records)
+        STORE.upsert_record("followups", followup_record["record_id"], followup_record)
 
     notification: dict[str, Any] = {
         "requested": push_update,
@@ -561,7 +590,25 @@ def update_student_support_task(
             notification["error"] = str(exc)
 
     task["last_notification"] = notification
-    save_json(SUPPORT_TASK_FILE, data)
+    STORE.upsert_record("support_tasks", task["task_id"], task)
+    STORE.append_audit(
+        task_id=task["task_id"],
+        action="updated",
+        actor=safe_updated_by,
+        before_status=before_task["status"],
+        after_status=task["status"],
+        details={
+            "owner_before": before_task["owner"],
+            "owner_after": task["owner"],
+            "due_date_before": before_task["due_date"],
+            "due_date_after": task["due_date"],
+            "progress_note": safe_progress,
+            "next_action": safe_next_action,
+            "followup_synced": bool(followup_record),
+            "notification_requested": notification["requested"],
+            "notification_sent": notification["sent"],
+        },
+    )
     return {
         "updated": True,
         "task": task,
@@ -617,6 +664,73 @@ def list_student_support_tasks(
             "owner": safe_owner,
             "overdue_only": overdue_only,
         },
+    }
+
+
+@mcp.tool()
+def get_support_task_audit(
+    task_id: str = "",
+    limit: int = 50,
+) -> dict[str, Any]:
+    """查询帮扶任务创建和状态变更审计台账，可按任务编号筛选。"""
+    if limit < 1 or limit > 100:
+        raise ValueError("单次审计查询数量必须在1到100之间。")
+    safe_task_id = task_id.strip().upper()
+    if safe_task_id:
+        find_support_task(safe_task_id, support_tasks())
+    items = STORE.list_audit(task_id=safe_task_id, limit=limit)
+    return {
+        "task_id": safe_task_id,
+        "total": len(items),
+        "items": items,
+        "note": "审计台账只记录操作轨迹，不包含数据库连接信息或钉钉密钥。",
+    }
+
+
+@mcp.tool()
+def get_system_readiness() -> dict[str, Any]:
+    """只读检查数据存储、任务数据和钉钉渠道配置状态，不返回任何密钥。"""
+    tasks = support_tasks()
+    records = followups()
+    class_webhook_count = sum(
+        1
+        for key, value in os.environ.items()
+        if value.strip()
+        and (
+            re.fullmatch(r"DINGTALK_CLASS_[A-Z0-9]+_WEBHOOK", key)
+            or re.fullmatch(r"DINGTALK_[A-Z]\d{6}_WEBHOOK", key)
+        )
+    )
+    return {
+        "ready": True,
+        "checked_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "storage": {
+            "backend": STORE.backend,
+            "label": STORE.label,
+            "durable_across_deploys": STORE.durable_across_deploys,
+            "database_url_configured": bool(os.environ.get("DATABASE_URL", "").strip()),
+        },
+        "data": {
+            "support_task_count": len(tasks),
+            "followup_record_count": len(records),
+            "audit_entry_count": STORE.count_audit(),
+            "support_task_status": summarize_task_status(tasks),
+            "overdue_task_count": sum(1 for task in tasks if is_task_overdue(task)),
+        },
+        "dingtalk": {
+            "default_group_configured": bool(
+                os.environ.get("DINGTALK_ROBOT_WEBHOOK", "").strip()
+            ),
+            "teacher_group_configured": bool(
+                os.environ.get("DINGTALK_TEACHER_WEBHOOK", "").strip()
+            ),
+            "class_group_configured_count": class_webhook_count,
+        },
+        "recommendation": (
+            "当前使用 PostgreSQL，任务数据可跨部署保留。"
+            if STORE.durable_across_deploys
+            else "当前使用本地 SQLite；在 Render 上应配置 DATABASE_URL 以实现跨部署持久化。"
+        ),
     }
 
 
@@ -892,7 +1006,21 @@ def generate_and_send_class_weekly_report(
 
 
 async def health(_request: Any) -> JSONResponse:
-    return JSONResponse({"status": "ok", "service": "student-growth-support-mcp"})
+    return JSONResponse(
+        {
+            "status": "ok",
+            "service": "student-growth-support-mcp",
+            "storage": {
+                "backend": STORE.backend,
+                "durable_across_deploys": STORE.durable_across_deploys,
+            },
+            "counts": {
+                "support_tasks": STORE.count_records("support_tasks"),
+                "followups": STORE.count_records("followups"),
+                "audit_entries": STORE.count_audit(),
+            },
+        }
+    )
 
 
 app = Starlette(

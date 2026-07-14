@@ -18,7 +18,9 @@ https://student-growth-support-mcp.onrender.com/sse
 
 | 文件 | 用途 |
 |---|---|
-| `student_management_mcp_sse.py` | 正式 SSE MCP 服务入口，包含 4 个学生管理工具 |
+| `student_management_mcp_sse.py` | 正式 SSE MCP 服务入口，包含画像、任务、审计、周报和通知工具 |
+| `persistent_store.py` | PostgreSQL/SQLite 双模式持久化与审计存储 |
+| `demo_data_maintenance.py` | 录屏前恢复基线或样例数据的维护脚本 |
 | `requirements.txt` | Render 安装依赖 |
 | `render.yaml` | Render 一键部署配置 |
 | `student_records.json` | 模拟学生画像数据 |
@@ -33,6 +35,11 @@ https://student-growth-support-mcp.onrender.com/sse
 | `list_attention_students` | 生成中关注、高关注学生名单 |
 | `create_followup_record` | 写入谈心谈话或帮扶跟进记录 |
 | `get_class_dashboard` | 汇总班级关注等级、缺勤、实训异常和帮扶情况 |
+| `create_student_support_task` | 创建带负责人、期限和措施的帮扶任务 |
+| `update_student_support_task` | 更新任务进展并可同步帮扶记录 |
+| `list_student_support_tasks` | 查询任务状态、负责人和逾期情况 |
+| `get_support_task_audit` | 查询任务创建与状态变化台账 |
+| `get_system_readiness` | 只读检查存储和渠道配置状态 |
 
 ## Render 部署步骤
 
@@ -42,6 +49,27 @@ https://student-growth-support-mcp.onrender.com/sse
 4. Render 检测到 `render.yaml` 后，按配置部署。
 5. 部署完成后打开 `/health`，看到 `status: ok` 即表示服务在线。
 6. 将 Render 服务地址后面加 `/sse`，填入平台 MCP 服务配置。
+
+## PostgreSQL 持久化配置
+
+服务通过 `DATABASE_URL` 连接 PostgreSQL。创建数据库后，在 Render Web Service 的 Environment 中增加完整连接串，并重新部署。
+
+```text
+DATABASE_URL=postgresql://用户名:密码@主机:5432/数据库名
+```
+
+部署完成后访问 `/health`，确认返回内容包含：
+
+```json
+{
+  "storage": {
+    "backend": "postgresql",
+    "durable_across_deploys": true
+  }
+}
+```
+
+数据库连接串只能保存在 Render 环境变量中，不得写入 GitHub、项目材料或智能体提示词。
 
 ## 平台接入方式
 
@@ -72,6 +100,6 @@ JSON 导入示例：
 
 ## 注意事项
 
-- 当前数据为比赛演示模拟数据，不接入真实学生隐私数据。
+- 当前数据为比赛演示数据，学生敏感字段必须按授权范围使用。
 - 帮扶建议只作学生工作辅助，不替代处分、资助、成绩、安全责任等正式认定。
 - Render 免费服务可能会休眠，首次访问可能较慢；正式答辩前建议提前唤醒服务。

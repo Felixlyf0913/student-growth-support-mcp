@@ -1,3 +1,7 @@
 .venv-mcp/
 __pycache__/
 *.pyc
+.data/
+*.db
+*.db-shm
+*.db-wal

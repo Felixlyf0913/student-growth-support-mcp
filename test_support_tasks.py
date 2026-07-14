@@ -1,26 +1,23 @@
-import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 import student_management_mcp_sse as service
+from persistent_store import PersistentStore
 
 
 class SupportTaskTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         root = Path(self.temp_dir.name)
-        self.original_task_file = service.SUPPORT_TASK_FILE
-        self.original_followup_file = service.FOLLOWUP_FILE
-        service.SUPPORT_TASK_FILE = root / "support_tasks.json"
-        service.FOLLOWUP_FILE = root / "followup_records.json"
-        service.save_json(service.SUPPORT_TASK_FILE, [])
-        service.save_json(service.FOLLOWUP_FILE, [])
+        self.original_store = service.STORE
+        service.STORE = PersistentStore(sqlite_path=root / "student_management.db")
+        service.STORE.replace_records("support_tasks", [], "task_id")
+        service.STORE.replace_records("followups", [], "record_id")
 
     def tearDown(self) -> None:
-        service.SUPPORT_TASK_FILE = self.original_task_file
-        service.FOLLOWUP_FILE = self.original_followup_file
+        service.STORE = self.original_store
         self.temp_dir.cleanup()
 
     def test_create_task_uses_profile_and_does_not_push_by_default(self) -> None:
@@ -29,6 +26,7 @@ class SupportTaskTests(unittest.TestCase):
                 student_query="S004",
                 owner="辅导员",
                 due_date="2026-07-18",
+                created_by="张老师",
             )
 
         self.assertFalse(result["notification"]["requested"])
@@ -38,9 +36,13 @@ class SupportTaskTests(unittest.TestCase):
         self.assertEqual(task["attention_level"], "高关注")
         self.assertEqual(task["status"], "待处理")
         self.assertEqual(task["priority"], "紧急")
+        self.assertEqual(task["created_by"], "张老师")
         self.assertTrue(task["measures"])
-        saved = json.loads(service.SUPPORT_TASK_FILE.read_text(encoding="utf-8"))
+        saved = service.support_tasks()
         self.assertEqual(saved[0]["task_id"], task["task_id"])
+        audit = service.STORE.list_audit(task_id=task["task_id"])
+        self.assertEqual(audit[0]["action"], "created")
+        self.assertEqual(audit[0]["actor"], "张老师")
 
     def test_create_task_pushes_only_when_explicitly_requested(self) -> None:
         with patch.object(
@@ -72,6 +74,7 @@ class SupportTaskTests(unittest.TestCase):
             status="已完成",
             progress_note="已完成线下谈心，学生反馈课程压力较大。",
             next_action="联系任课教师并于一周后复访。",
+            updated_by="李老师",
             sync_followup=True,
         )
 
@@ -83,6 +86,9 @@ class SupportTaskTests(unittest.TestCase):
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["student_id"], "S004")
         self.assertEqual(records[0]["status"], "已完成")
+        audit = service.get_support_task_audit(created["task_id"])
+        self.assertEqual(audit["items"][0]["after_status"], "已完成")
+        self.assertEqual(audit["items"][0]["actor"], "李老师")
 
     def test_list_tasks_supports_overdue_and_status_summary(self) -> None:
         service.create_student_support_task(
@@ -130,6 +136,21 @@ class SupportTaskTests(unittest.TestCase):
             report = service.generate_and_send_class_weekly_report("电商2403")
 
         self.assertEqual(report["summary"]["support_task_status"]["待处理"], 1)
+
+    def test_readiness_does_not_expose_secrets(self) -> None:
+        with patch.dict(
+            service.os.environ,
+            {
+                "DINGTALK_TEACHER_WEBHOOK": "https://example.test/secret",
+                "DINGTALK_S604124_WEBHOOK": "https://example.test/class-secret",
+            },
+            clear=False,
+        ):
+            result = service.get_system_readiness()
+
+        self.assertEqual(result["storage"]["backend"], "sqlite")
+        self.assertTrue(result["dingtalk"]["teacher_group_configured"])
+        self.assertNotIn("example.test", str(result))
 
 
 if __name__ == "__main__":

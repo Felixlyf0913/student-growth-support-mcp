@@ -22,6 +22,8 @@
 | `create_student_support_task` | 根据画像创建帮扶任务，可按明确要求推送辅导员群 |
 | `update_student_support_task` | 更新任务状态、进展并可同步帮扶记录 |
 | `list_student_support_tasks` | 查询待办、逾期和已完成任务 |
+| `get_support_task_audit` | 查询任务创建和状态变更审计台账 |
+| `get_system_readiness` | 只读检查存储、任务数据和钉钉渠道配置 |
 | `get_class_dashboard` | 生成班级学生状态看板数据 |
 | `generate_and_send_class_weekly_report` | 生成匿名班级周报并推送教师工作群 |
 
@@ -37,6 +39,35 @@ python -m uvicorn student_management_mcp_api:app --host 127.0.0.1 --port 8765
 ```powershell
 python -m uvicorn student_management_mcp_sse:app --host 127.0.0.1 --port 8000
 ```
+
+## 数据持久化
+
+- 配置 `DATABASE_URL` 时使用 PostgreSQL，任务、跟进记录和审计台账可跨 Render 部署保留。
+- 未配置时自动使用 `.data/student_management.db` 本地 SQLite，适合开发测试，但 Render 重新部署后可能丢失。
+- 首次启用数据库时会自动迁移仓库内 `followup_records.json` 和 `support_tasks.json` 的基础数据。
+- 健康检查 `/health` 会返回存储类型和记录数量，但不会返回数据库地址或钉钉密钥。
+
+PostgreSQL 连接变量示例：
+
+```text
+DATABASE_URL=postgresql://用户名:密码@主机:5432/数据库名
+```
+
+## 演示数据维护
+
+恢复基线数据：
+
+```powershell
+python demo_data_maintenance.py --mode baseline --confirm RESET-DEMO-DATA
+```
+
+生成两条固定演示任务：
+
+```powershell
+python demo_data_maintenance.py --mode sample --confirm RESET-DEMO-DATA
+```
+
+该脚本会清理当前任务和审计台账，因此只允许维护人员在录屏准备阶段使用；它不是 MCP 工具，也不会发送钉钉消息。
 
 ## 调用示例
 
