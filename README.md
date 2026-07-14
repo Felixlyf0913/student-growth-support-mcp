@@ -2,7 +2,7 @@
 
 ## 目标
 
-面向“学生成长画像与主动帮扶闭环”场景，提供一组可接入智能体平台的模拟工具，让智能体能够查询学生画像、筛选关注名单、写入帮扶记录、生成班级看板数据。
+面向“学生成长画像与主动帮扶闭环”场景，提供一组已接入智能体平台的 MCP 工具，让智能体能够查询学生画像、筛选关注名单、创建和跟踪帮扶任务、写入帮扶记录、生成班级看板并联动钉钉群。
 
 ## 亮点
 
@@ -19,13 +19,23 @@
 | `get_student_profile` | 按学号或姓名查询学生成长画像 |
 | `list_attention_students` | 筛选中/高关注学生名单 |
 | `create_followup_record` | 写入谈心谈话或帮扶跟进记录 |
+| `create_student_support_task` | 根据画像创建帮扶任务，可按明确要求推送辅导员群 |
+| `update_student_support_task` | 更新任务状态、进展并可同步帮扶记录 |
+| `list_student_support_tasks` | 查询待办、逾期和已完成任务 |
 | `get_class_dashboard` | 生成班级学生状态看板数据 |
+| `generate_and_send_class_weekly_report` | 生成匿名班级周报并推送教师工作群 |
 
 ## 本地运行
 
 ```powershell
 cd D:\教育信息技术应用大赛\学生管理MCP原型
 python -m uvicorn student_management_mcp_api:app --host 127.0.0.1 --port 8765
+```
+
+公网部署与智能体平台使用的是 `student_management_mcp_sse:app`，本地验证可运行：
+
+```powershell
+python -m uvicorn student_management_mcp_sse:app --host 127.0.0.1 --port 8000
 ```
 
 ## 调用示例
@@ -76,6 +86,35 @@ python -m uvicorn student_management_mcp_api:app --host 127.0.0.1 --port 8765
 }
 ```
 
+创建帮扶任务（默认不推送）：
+
+```json
+{
+  "tool": "create_student_support_task",
+  "arguments": {
+    "student_query": "S004",
+    "owner": "辅导员",
+    "due_date": "2026-07-18",
+    "push_to_dingtalk": false
+  }
+}
+```
+
+完成任务并同步帮扶记录：
+
+```json
+{
+  "tool": "update_student_support_task",
+  "arguments": {
+    "task_id": "任务编号",
+    "status": "已完成",
+    "progress_note": "已完成线下谈心。",
+    "next_action": "联系任课教师并于一周后复访。",
+    "sync_followup": true
+  }
+}
+```
+
 ## 平台接入建议
 
 平台实测支持两种入口：
@@ -92,4 +131,4 @@ python -m uvicorn student_management_mcp_api:app --host 127.0.0.1 --port 8765
    - 格式为 `mcpServers`
    - 示例见 `mcp_servers.example.json`
 
-当前本地原型提供的是 HTTP 工具逻辑：`/tools/list` 与 `/tools/call`。平台正式接入需要一个可被平台访问到的 SSE MCP 地址，因此不能直接填写本机 `127.0.0.1` 作为最终配置。下一步可把本原型部署到公网或校内可访问服务器，并增加 MCP/SSE 协议适配层。
+当前 SSE MCP 服务已部署到 Render，平台通过 `/sse` 地址发现和调用工具。本机 `127.0.0.1` 仅用于开发验证，不能作为平台的公网接入地址。

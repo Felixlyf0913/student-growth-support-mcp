@@ -20,6 +20,9 @@ BASE_DIR = Path(__file__).resolve().parent
 STUDENT_FILE = BASE_DIR / "student_records.json"
 FOLLOWUP_FILE = BASE_DIR / "followup_records.json"
 ROSTER_FILE = BASE_DIR / "roster_students.json"
+SUPPORT_TASK_FILE = BASE_DIR / "support_tasks.json"
+
+SUPPORT_TASK_STATUSES = ("待处理", "跟进中", "已完成", "已关闭")
 
 
 def load_json(path: Path) -> Any:
@@ -44,6 +47,12 @@ def roster_students() -> list[dict[str, Any]]:
     return load_json(ROSTER_FILE)
 
 
+def support_tasks() -> list[dict[str, Any]]:
+    if not SUPPORT_TASK_FILE.exists():
+        return []
+    return load_json(SUPPORT_TASK_FILE)
+
+
 def find_student(query: str) -> dict[str, Any]:
     query = query.strip()
     for item in students():
@@ -58,6 +67,37 @@ def find_roster_student(query: str) -> dict[str, Any]:
         if item["student_id"] == query or item["name"] == query:
             return item
     raise ValueError(f"未在真实名册中找到学生：{query}")
+
+
+def find_support_task(task_id: str, tasks: list[dict[str, Any]]) -> dict[str, Any]:
+    normalized = task_id.strip().upper()
+    for item in tasks:
+        if item["task_id"].upper() == normalized:
+            return item
+    raise ValueError(f"未找到帮扶任务：{task_id}")
+
+
+def normalize_due_date(value: str) -> str:
+    normalized = value.strip()
+    try:
+        datetime.strptime(normalized, "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError("完成期限必须使用 YYYY-MM-DD 格式。") from exc
+    return normalized
+
+
+def summarize_task_status(items: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        status: sum(1 for item in items if item["status"] == status)
+        for status in SUPPORT_TASK_STATUSES
+    }
+
+
+def is_task_overdue(item: dict[str, Any]) -> bool:
+    return (
+        item["status"] not in ("已完成", "已关闭")
+        and item["due_date"] < datetime.now().strftime("%Y-%m-%d")
+    )
 
 
 def count_by(items: list[dict[str, Any]], field: str) -> dict[str, int]:
@@ -237,7 +277,8 @@ mcp = FastMCP(
     "学生成长画像与主动帮扶 MCP 服务",
     instructions=(
         "面向校策通枢学生管理场景，提供学生画像查询、关注名单筛选、"
-        "帮扶记录写入和班级态势看板能力。输出仅用于学生工作辅助研判。"
+        "帮扶任务闭环、记录写入、班级态势看板和钉钉通知能力。"
+        "写操作和消息推送仅在用户明确要求时执行，输出仅用于学生工作辅助研判。"
     ),
     host="0.0.0.0",
     port=int(os.environ.get("PORT", "8000")),
@@ -313,6 +354,273 @@ def create_followup_record(
 
 
 @mcp.tool()
+def create_student_support_task(
+    student_query: str,
+    owner: str,
+    due_date: str,
+    objective: str = "",
+    measures: list[str] | None = None,
+    priority: str = "自动",
+    push_to_dingtalk: bool = False,
+    target: str = "辅导员工作群",
+    mention_all: bool = False,
+) -> dict[str, Any]:
+    """根据学生画像创建帮扶任务；仅在明确要求时推送到辅导员或教师工作群。"""
+    student = find_student(student_query)
+    safe_owner = owner.strip()
+    if not safe_owner:
+        raise ValueError("帮扶任务必须指定负责人。")
+    safe_due_date = normalize_due_date(due_date)
+    score = score_attention(student)
+    level = level_from_score(score)
+    priority_map = {"高关注": "紧急", "中关注": "重点", "低关注": "常规"}
+    safe_priority = priority.strip() or "自动"
+    if safe_priority == "自动":
+        safe_priority = priority_map[level]
+    if safe_priority not in ("紧急", "重点", "常规"):
+        raise ValueError("任务优先级仅支持：自动、紧急、重点、常规。")
+
+    safe_objective = objective.strip() or (
+        f"围绕{student['name']}当前{level}事项完成一次核实、帮扶和复访安排。"
+    )
+    safe_measures = [item.strip() for item in measures or [] if item.strip()]
+    if not safe_measures:
+        safe_measures = suggest_actions(student, score)[:3]
+
+    now = datetime.now()
+    task = {
+        "task_id": f"ST{now.strftime('%Y%m%d%H%M%S%f')}",
+        "student_id": student["student_id"],
+        "student_name": student["name"],
+        "class_name": student["class_name"],
+        "attention_score": score,
+        "attention_level": level,
+        "risk_reasons": build_reasons(student),
+        "priority": safe_priority,
+        "objective": safe_objective,
+        "measures": safe_measures,
+        "owner": safe_owner,
+        "due_date": safe_due_date,
+        "status": "待处理",
+        "created_at": now.strftime("%Y-%m-%d %H:%M"),
+        "updated_at": now.strftime("%Y-%m-%d %H:%M"),
+        "completed_at": "",
+        "progress_history": [],
+    }
+    notification: dict[str, Any] = {
+        "requested": push_to_dingtalk,
+        "sent": False,
+        "channel": "",
+    }
+    if push_to_dingtalk:
+        keyword = os.environ.get("DINGTALK_KEYWORD", "MCP").strip() or "MCP"
+        title = f"{student['name']}{level}帮扶任务"
+        reason_text = "；".join(task["risk_reasons"][:4])
+        measure_text = "\n".join(
+            f"{index}. {item}" for index, item in enumerate(safe_measures, start=1)
+        )
+        message = (
+            f"## {keyword}｜帮扶任务：{title}\n\n"
+            f"**任务编号：** {task['task_id']}\n\n"
+            f"**学生：** {student['name']}（{student['student_id']}，{student['class_name']}）\n\n"
+            f"**关注等级：** {level}（{score}分）\n\n"
+            f"**主要依据：** {reason_text}\n\n"
+            f"**负责人：** {safe_owner}\n\n"
+            f"**完成期限：** {safe_due_date}\n\n"
+            f"**帮扶措施：**\n{measure_text}\n\n"
+            f"> 请在授权范围内核实处置，注意保护学生隐私，完成后更新任务进展。"
+        )
+        try:
+            channel, result = send_dingtalk_markdown(
+                title,
+                message,
+                target,
+                "teacher",
+                None,
+                mention_all,
+            )
+            notification.update(
+                {
+                    "sent": result.get("errcode") == 0,
+                    "channel": channel,
+                    "result": result,
+                }
+            )
+        except Exception as exc:
+            notification["error"] = str(exc)
+
+    task["notification"] = notification
+    data = support_tasks()
+    data.append(task)
+    save_json(SUPPORT_TASK_FILE, data)
+    return {"created": True, "task": task, "notification": notification}
+
+
+@mcp.tool()
+def update_student_support_task(
+    task_id: str,
+    status: str = "",
+    progress_note: str = "",
+    next_action: str = "",
+    owner: str = "",
+    due_date: str = "",
+    sync_followup: bool = False,
+    push_update: bool = False,
+    target: str = "辅导员工作群",
+    mention_all: bool = False,
+) -> dict[str, Any]:
+    """更新帮扶任务状态和进展；可同步写入帮扶记录并按明确要求推送进展。"""
+    data = support_tasks()
+    task = find_support_task(task_id, data)
+    safe_status = status.strip()
+    safe_progress = progress_note.strip()
+    safe_next_action = next_action.strip()
+    safe_owner = owner.strip()
+    safe_due_date = due_date.strip()
+    if not any((safe_status, safe_progress, safe_next_action, safe_owner, safe_due_date)):
+        raise ValueError("请至少提供一项需要更新的任务信息。")
+    if safe_status and safe_status not in SUPPORT_TASK_STATUSES:
+        raise ValueError("任务状态仅支持：待处理、跟进中、已完成、已关闭。")
+    if sync_followup and (not safe_progress or not safe_next_action):
+        raise ValueError("同步帮扶记录时必须提供本次进展和下一步措施。")
+
+    now = datetime.now()
+    if safe_status:
+        task["status"] = safe_status
+        task["completed_at"] = (
+            now.strftime("%Y-%m-%d %H:%M")
+            if safe_status in ("已完成", "已关闭")
+            else ""
+        )
+    if safe_owner:
+        task["owner"] = safe_owner
+    if safe_due_date:
+        task["due_date"] = normalize_due_date(safe_due_date)
+    if safe_progress or safe_next_action:
+        task.setdefault("progress_history", []).append(
+            {
+                "recorded_at": now.strftime("%Y-%m-%d %H:%M"),
+                "owner": task["owner"],
+                "progress_note": safe_progress,
+                "next_action": safe_next_action,
+            }
+        )
+    task["updated_at"] = now.strftime("%Y-%m-%d %H:%M")
+
+    followup_record = None
+    if sync_followup:
+        records = followups()
+        followup_record = {
+            "record_id": f"F{now.strftime('%Y%m%d%H%M%S%f')}",
+            "student_id": task["student_id"],
+            "created_at": now.strftime("%Y-%m-%d %H:%M"),
+            "owner": task["owner"],
+            "summary": safe_progress,
+            "next_action": safe_next_action,
+            "status": task["status"],
+            "task_id": task["task_id"],
+        }
+        records.append(followup_record)
+        save_json(FOLLOWUP_FILE, records)
+
+    notification: dict[str, Any] = {
+        "requested": push_update,
+        "sent": False,
+        "channel": "",
+    }
+    if push_update:
+        keyword = os.environ.get("DINGTALK_KEYWORD", "MCP").strip() or "MCP"
+        title = f"帮扶任务进展：{task['student_name']}"
+        message = (
+            f"## {keyword}｜帮扶任务进展\n\n"
+            f"**任务编号：** {task['task_id']}\n\n"
+            f"**学生：** {task['student_name']}（{task['student_id']}）\n\n"
+            f"**当前状态：** {task['status']}\n\n"
+            f"**负责人：** {task['owner']}\n\n"
+            f"**本次进展：** {safe_progress or '本次仅更新任务基础信息'}\n\n"
+            f"**下一步：** {safe_next_action or '按原任务计划继续推进'}\n\n"
+            f"> 本消息由校策通枢记录，请在授权范围内核实使用。"
+        )
+        try:
+            channel, result = send_dingtalk_markdown(
+                title,
+                message,
+                target,
+                "teacher",
+                None,
+                mention_all,
+            )
+            notification.update(
+                {
+                    "sent": result.get("errcode") == 0,
+                    "channel": channel,
+                    "result": result,
+                }
+            )
+        except Exception as exc:
+            notification["error"] = str(exc)
+
+    task["last_notification"] = notification
+    save_json(SUPPORT_TASK_FILE, data)
+    return {
+        "updated": True,
+        "task": task,
+        "followup_record": followup_record,
+        "notification": notification,
+    }
+
+
+@mcp.tool()
+def list_student_support_tasks(
+    student_query: str = "",
+    status: str = "",
+    owner: str = "",
+    overdue_only: bool = False,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """查询学生、负责人、状态或逾期帮扶任务，并返回任务状态统计。"""
+    safe_status = status.strip()
+    if safe_status and safe_status not in SUPPORT_TASK_STATUSES:
+        raise ValueError("任务状态仅支持：待处理、跟进中、已完成、已关闭。")
+    if limit < 1 or limit > 100:
+        raise ValueError("单次查询数量必须在1到100之间。")
+
+    rows = support_tasks()
+    safe_student = student_query.strip()
+    safe_owner = owner.strip()
+    if safe_student:
+        rows = [
+            item
+            for item in rows
+            if safe_student in (item["student_id"], item["student_name"])
+        ]
+    if safe_owner:
+        rows = [item for item in rows if safe_owner in item["owner"]]
+    status_summary = summarize_task_status(rows)
+    overdue_count = sum(1 for item in rows if is_task_overdue(item))
+    if safe_status:
+        rows = [item for item in rows if item["status"] == safe_status]
+    if overdue_only:
+        rows = [item for item in rows if is_task_overdue(item)]
+    rows = sorted(
+        rows,
+        key=lambda item: (item["due_date"], item["created_at"]),
+    )
+    return {
+        "total": len(rows),
+        "status_summary": status_summary,
+        "overdue_count": overdue_count,
+        "items": rows[:limit],
+        "filters": {
+            "student_query": safe_student,
+            "status": safe_status,
+            "owner": safe_owner,
+            "overdue_only": overdue_only,
+        },
+    }
+
+
+@mcp.tool()
 def get_class_dashboard(class_name: str) -> dict[str, Any]:
     """按班级汇总关注等级、缺勤、实训异常和帮扶跟进情况。"""
     rows = [student for student in students() if student["class_name"] == class_name]
@@ -323,6 +631,10 @@ def get_class_dashboard(class_name: str) -> dict[str, Any]:
     for item in rows:
         levels[level_from_score(score_attention(item))] += 1
 
+    student_ids = {item["student_id"] for item in rows}
+    class_tasks = [
+        task for task in support_tasks() if task["student_id"] in student_ids
+    ]
     return {
         "class_name": class_name,
         "student_count": len(rows),
@@ -337,6 +649,10 @@ def get_class_dashboard(class_name: str) -> dict[str, Any]:
                 for record in followups()
                 if any(item["student_id"] == record["student_id"] for item in rows)
             ]
+        ),
+        "support_task_summary": summarize_task_status(class_tasks),
+        "support_task_overdue_count": sum(
+            1 for task in class_tasks if is_task_overdue(task)
         ),
         "top_attention_students": sorted(
             [
@@ -506,6 +822,9 @@ def generate_and_send_class_weekly_report(
 
     student_ids = {item["student_id"] for item in risk_rows}
     class_followups = [record for record in followups() if record["student_id"] in student_ids]
+    class_tasks = [task for task in support_tasks() if task["student_id"] in student_ids]
+    task_status = summarize_task_status(class_tasks)
+    overdue_tasks = sum(1 for task in class_tasks if is_task_overdue(task))
     absence_total = sum(int(item["attendance_absences_30d"]) for item in risk_rows)
     late_total = sum(int(item["late_count_30d"]) for item in risk_rows)
     training_missing = sum(int(item["training_log_missing"]) for item in risk_rows)
@@ -520,7 +839,9 @@ def generate_and_send_class_weekly_report(
         f"低关注{attention_levels['低关注']}人\n"
         f"- 近30天考勤：缺勤{absence_total}次、迟到{late_total}次\n"
         f"- 实训情况：日志缺项{training_missing}次、异常记录{training_issues}次\n"
-        f"- 帮扶跟进：累计{len(class_followups)}条记录"
+        f"- 帮扶跟进：累计{len(class_followups)}条记录\n"
+        f"- 帮扶任务：待处理{task_status['待处理']}项、跟进中{task_status['跟进中']}项、"
+        f"已完成{task_status['已完成']}项、逾期{overdue_tasks}项"
         if risk_rows
         else "- 动态风险、考勤、实训及帮扶数据尚未接入该班级，本期仅展示名册基础态势"
     )
@@ -562,6 +883,8 @@ def generate_and_send_class_weekly_report(
             "grade_distribution": grade_distribution,
             "attention_levels": attention_levels if risk_rows else None,
             "followup_count": len(class_followups),
+            "support_task_status": task_status,
+            "support_task_overdue_count": overdue_tasks,
         },
         "privacy": "公开周报未展示学生姓名和个人风险明细。",
         "dingtalk_result": result,
