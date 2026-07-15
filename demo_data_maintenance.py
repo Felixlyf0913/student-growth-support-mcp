@@ -25,12 +25,14 @@ def reset_demo_data(mode: str) -> dict[str, object]:
             student_query="S004",
             owner="辅导员",
             due_date=(date.today() + timedelta(days=3)).isoformat(),
+            requirements_confirmed=True,
             push_to_dingtalk=False,
         )["task"]
         second = service.create_student_support_task(
             student_query="S002",
             owner="王老师",
             due_date=(date.today() + timedelta(days=5)).isoformat(),
+            requirements_confirmed=True,
             push_to_dingtalk=False,
         )["task"]
         service.update_student_support_task(

@@ -24,6 +24,7 @@ class DemoDataMaintenanceTests(unittest.TestCase):
             student_query="S004",
             owner="辅导员",
             due_date="2026-07-18",
+            requirements_confirmed=True,
         )
 
         result = maintenance.reset_demo_data("baseline")

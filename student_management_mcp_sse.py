@@ -369,6 +369,7 @@ def create_student_support_task(
     student_query: str,
     owner: str,
     due_date: str,
+    requirements_confirmed: bool = False,
     created_by: str = "当前操作人",
     objective: str = "",
     measures: list[str] | None = None,
@@ -377,7 +378,12 @@ def create_student_support_task(
     target: str = "辅导员工作群",
     mention_all: bool = False,
 ) -> dict[str, Any]:
-    """根据学生画像创建帮扶任务；仅在明确要求时推送到辅导员或教师工作群。"""
+    """创建帮扶任务。仅当用户已明确提供负责人和截止日期时，requirements_confirmed 才能为 true。"""
+    if not requirements_confirmed:
+        raise ValueError(
+            "尚未确认任务负责人和截止日期。请先向用户追问这两项信息，"
+            "不得根据画像、角色或当前日期自行补全。"
+        )
     student = find_student(student_query)
     safe_owner = owner.strip()
     if not safe_owner:

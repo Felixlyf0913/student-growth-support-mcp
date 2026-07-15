@@ -26,6 +26,7 @@ class SupportTaskTests(unittest.TestCase):
                 student_query="S004",
                 owner="辅导员",
                 due_date="2026-07-18",
+                requirements_confirmed=True,
                 created_by="张老师",
             )
 
@@ -44,6 +45,16 @@ class SupportTaskTests(unittest.TestCase):
         self.assertEqual(audit[0]["action"], "created")
         self.assertEqual(audit[0]["actor"], "张老师")
 
+    def test_create_task_rejects_unconfirmed_requirements(self) -> None:
+        with self.assertRaisesRegex(ValueError, "尚未确认任务负责人和截止日期"):
+            service.create_student_support_task(
+                student_query="S004",
+                owner="辅导员",
+                due_date="2026-07-30",
+            )
+
+        self.assertEqual(service.support_tasks(), [])
+
     def test_create_task_pushes_only_when_explicitly_requested(self) -> None:
         with patch.object(
             service,
@@ -54,6 +65,7 @@ class SupportTaskTests(unittest.TestCase):
                 student_query="S004",
                 owner="辅导员",
                 due_date="2026-07-18",
+                requirements_confirmed=True,
                 push_to_dingtalk=True,
             )
 
@@ -67,6 +79,7 @@ class SupportTaskTests(unittest.TestCase):
             student_query="S004",
             owner="辅导员",
             due_date="2026-07-18",
+            requirements_confirmed=True,
         )["task"]
 
         result = service.update_student_support_task(
@@ -95,11 +108,13 @@ class SupportTaskTests(unittest.TestCase):
             student_query="S002",
             owner="王老师",
             due_date="2000-01-01",
+            requirements_confirmed=True,
         )
         completed = service.create_student_support_task(
             student_query="S004",
             owner="王老师",
             due_date="2000-01-01",
+            requirements_confirmed=True,
         )["task"]
         service.update_student_support_task(
             task_id=completed["task_id"],
@@ -123,6 +138,7 @@ class SupportTaskTests(unittest.TestCase):
             student_query="S004",
             owner="辅导员",
             due_date="2026-07-18",
+            requirements_confirmed=True,
         )
 
         dashboard = service.get_class_dashboard("电商2403")
