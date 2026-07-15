@@ -46,13 +46,15 @@ class SupportTaskTests(unittest.TestCase):
         self.assertEqual(audit[0]["actor"], "张老师")
 
     def test_create_task_rejects_unconfirmed_requirements(self) -> None:
-        with self.assertRaisesRegex(ValueError, "尚未确认任务负责人和截止日期"):
-            service.create_student_support_task(
-                student_query="S004",
-                owner="辅导员",
-                due_date="2026-07-30",
-            )
+        result = service.create_student_support_task(
+            student_query="S004",
+            owner="辅导员",
+            due_date="2026-07-30",
+        )
 
+        self.assertFalse(result["created"])
+        self.assertTrue(result["blocked"])
+        self.assertEqual(result["required_user_input"], ["负责人", "具体截止日期"])
         self.assertEqual(service.support_tasks(), [])
 
     def test_create_task_pushes_only_when_explicitly_requested(self) -> None:

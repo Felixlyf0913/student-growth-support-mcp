@@ -380,10 +380,16 @@ def create_student_support_task(
 ) -> dict[str, Any]:
     """创建帮扶任务。仅当用户已明确提供负责人和截止日期时，requirements_confirmed 才能为 true。"""
     if not requirements_confirmed:
-        raise ValueError(
-            "尚未确认任务负责人和截止日期。请先向用户追问这两项信息，"
-            "不得根据画像、角色或当前日期自行补全。"
-        )
+        return {
+            "created": False,
+            "blocked": True,
+            "reason": "missing_user_confirmation",
+            "required_user_input": ["负责人", "具体截止日期"],
+            "message": (
+                "尚未确认任务负责人和截止日期。请直接向用户追问这两项信息，"
+                "不得根据画像、角色或当前日期自行补全，也不要重试创建。"
+            ),
+        }
     student = find_student(student_query)
     safe_owner = owner.strip()
     if not safe_owner:
