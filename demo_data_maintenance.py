@@ -56,7 +56,7 @@ def reset_demo_data(mode: str) -> dict[str, object]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="恢复校策通枢比赛演示数据。该脚本不会发送钉钉消息。"
+        description="恢复校务智枢比赛演示数据。该脚本不会发送钉钉消息。"
     )
     parser.add_argument(
         "--mode",

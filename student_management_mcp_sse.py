@@ -289,7 +289,7 @@ def suggest_actions(item: dict[str, Any], score: int) -> list[str]:
 mcp = FastMCP(
     "学生成长画像与主动帮扶 MCP 服务",
     instructions=(
-        "面向校策通枢学生管理场景，提供学生画像查询、关注名单筛选、"
+        "面向校务智枢学生管理场景，提供学生画像查询、关注名单筛选、"
         "帮扶任务闭环、记录写入、班级态势看板和钉钉通知能力。"
         "写操作和消息推送仅在用户明确要求时执行，输出仅用于学生工作辅助研判。"
     ),
@@ -580,7 +580,7 @@ def update_student_support_task(
             f"**负责人：** {task['owner']}\n\n"
             f"**本次进展：** {safe_progress or '本次仅更新任务基础信息'}\n\n"
             f"**下一步：** {safe_next_action or '按原任务计划继续推进'}\n\n"
-            f"> 本消息由校策通枢记录，请在授权范围内核实使用。"
+            f"> 本消息由校务智枢记录，请在授权范围内核实使用。"
         )
         try:
             channel, result = send_dingtalk_markdown(
@@ -899,7 +899,7 @@ def send_dingtalk_notice(
         f"## {keyword}｜{notice_type}：{safe_title}\n\n"
         f"**接收对象：** {target}\n\n"
         f"{safe_content}\n\n"
-        f"> 本消息由校策通枢智能体生成，请相关老师结合实际情况核对后执行。"
+        f"> 本消息由校务智枢智能体生成，请相关老师结合实际情况核对后执行。"
     )
     mobiles = normalize_at_mobiles(at_mobiles)
     channel, result = send_dingtalk_markdown(
@@ -985,7 +985,7 @@ def generate_and_send_class_weekly_report(
         f"1. 核对考勤、实训日志和重点事项完成情况；\n"
         f"2. 对需关注学生开展分级沟通，敏感信息仅在授权范围内流转；\n"
         f"3. 更新帮扶记录和复访待办，形成闭环留痕。\n\n"
-        f"> 本周报由校策通枢根据当前已接入数据自动生成，未展示学生姓名等敏感明细，请辅导员结合实际情况复核。"
+        f"> 本周报由校务智枢根据当前已接入数据自动生成，未展示学生姓名等敏感明细，请辅导员结合实际情况复核。"
     )
     channel, result = send_dingtalk_markdown(
         title,
