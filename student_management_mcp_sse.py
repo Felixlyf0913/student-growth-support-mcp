@@ -24,6 +24,7 @@ STUDENT_FILE = BASE_DIR / "student_records.json"
 FOLLOWUP_FILE = BASE_DIR / "followup_records.json"
 ROSTER_FILE = BASE_DIR / "roster_students.json"
 SUPPORT_TASK_FILE = BASE_DIR / "support_tasks.json"
+TRAINING_ROOM_FILE = BASE_DIR / "training_room_records.json"
 SQLITE_FILE = BASE_DIR / ".data" / "student_management.db"
 
 STORE = PersistentStore(sqlite_path=SQLITE_FILE)
@@ -51,6 +52,41 @@ def roster_students() -> list[dict[str, Any]]:
 
 def support_tasks() -> list[dict[str, Any]]:
     return STORE.list_records("support_tasks")
+
+
+def training_room_records() -> dict[str, list[dict[str, Any]]]:
+    if not TRAINING_ROOM_FILE.exists():
+        return {"rooms": [], "schedules": [], "equipment": [], "safety_and_loans": []}
+    return load_json(TRAINING_ROOM_FILE)
+
+
+def training_room_data_note() -> str:
+    return (
+        "班级和学生基础信息来自授权演示名册；实训室课表、设备、报修、巡检和借用记录为比赛演示台账，"
+        "仅用于功能展示与辅助研判，需由授权人员结合正式业务系统复核。"
+    )
+
+
+def find_training_room(query: str) -> dict[str, Any]:
+    normalized = re.sub(r"\s+", "", query.strip().lower())
+    for room in training_room_records()["rooms"]:
+        candidates = (
+            room["room_id"],
+            room["name"],
+            room["room_number"],
+            f'{room["building"]}{room["room_number"]}',
+        )
+        if any(normalized == re.sub(r"\s+", "", value.lower()) for value in candidates):
+            return room
+    raise ValueError(f"未找到实训室：{query}")
+
+
+def time_to_minutes(value: str) -> int:
+    normalized = value.strip()
+    if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", normalized):
+        raise ValueError("时间必须使用 HH:MM 格式，例如 14:00。")
+    hour, minute = normalized.split(":")
+    return int(hour) * 60 + int(minute)
 
 
 def initialize_storage_from_legacy_json() -> None:
@@ -1085,6 +1121,171 @@ def generate_and_send_class_weekly_report(
         "privacy": "公开周报未展示学生姓名和个人风险明细。",
         "report": report,
         "notification": notification,
+    }
+
+
+@mcp.tool()
+def get_training_room_availability(
+    room_query: str,
+    date: str,
+    start_time: str,
+    end_time: str,
+) -> dict[str, Any]:
+    """查询指定实训室在某日某时段是否可预约。room_query 可填 302、TR-302 或实训室名称；时间使用 HH:MM。"""
+    try:
+        datetime.strptime(date.strip(), "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError("日期必须使用 YYYY-MM-DD 格式，例如 2026-08-19。") from exc
+    requested_start = time_to_minutes(start_time)
+    requested_end = time_to_minutes(end_time)
+    if requested_start >= requested_end:
+        raise ValueError("结束时间必须晚于开始时间。")
+
+    room = find_training_room(room_query)
+    bookings = [
+        item
+        for item in training_room_records()["schedules"]
+        if item["room_id"] == room["room_id"] and item["date"] == date.strip()
+    ]
+    conflicts: list[dict[str, Any]] = []
+    pending: list[dict[str, Any]] = []
+    for booking in bookings:
+        overlap = (
+            requested_start < time_to_minutes(booking["end_time"])
+            and requested_end > time_to_minutes(booking["start_time"])
+        )
+        if not overlap:
+            continue
+        if booking["approval"] == "已通过":
+            conflicts.append(booking)
+        else:
+            pending.append(booking)
+
+    if conflicts:
+        availability = "已占用"
+        recommendation = "该时段已有已通过排课或预约，建议更换时段或联系实训中心管理员协调。"
+    elif pending:
+        availability = "待确认"
+        recommendation = "该时段存在待审核预约，建议先核实审批结果后再安排使用。"
+    else:
+        availability = "可预约"
+        recommendation = "当前演示台账未发现冲突记录，正式预约仍需按学校场地审批流程办理。"
+
+    return {
+        "room": room,
+        "query_date": date.strip(),
+        "requested_time": f"{start_time.strip()}-{end_time.strip()}",
+        "availability": availability,
+        "confirmed_conflicts": conflicts,
+        "pending_bookings": pending,
+        "day_bookings": bookings,
+        "recommendation": recommendation,
+        "data_note": training_room_data_note(),
+    }
+
+
+@mcp.tool()
+def get_class_training_schedule(
+    class_name: str,
+    start_date: str = "",
+    end_date: str = "",
+) -> dict[str, Any]:
+    """查询班级实训安排。班级名称可填写 S604124移动班；日期可选，使用 YYYY-MM-DD。"""
+    class_name = resolve_class_name(class_name)
+    records = training_room_records()
+    rooms = {item["room_id"]: item for item in records["rooms"]}
+    schedules = [
+        item for item in records["schedules"] if item["class_name"] == class_name
+    ]
+    if start_date:
+        schedules = [item for item in schedules if item["date"] >= start_date.strip()]
+    if end_date:
+        schedules = [item for item in schedules if item["date"] <= end_date.strip()]
+    if not schedules:
+        raise ValueError(f"未找到班级“{class_name}”在指定范围内的实训安排。")
+    enriched = [
+        {
+            **item,
+            "room_name": rooms[item["room_id"]]["name"],
+            "room_location": f'{rooms[item["room_id"]]["building"]}{rooms[item["room_id"]]["room_number"]}',
+        }
+        for item in sorted(schedules, key=lambda row: (row["date"], row["start_time"]))
+    ]
+    return {
+        "class_name": class_name,
+        "schedule_count": len(enriched),
+        "schedules": enriched,
+        "recommendation": "建议实训指导教师在每次实训前核验设备状态，并在结束后确认日志提交与设备归还情况。",
+        "data_note": training_room_data_note(),
+    }
+
+
+@mcp.tool()
+def get_equipment_repair_status(query: str = "") -> dict[str, Any]:
+    """查询实训设备状态与报修工单。可按设备名称、设备编号、报修工单号或实训室编号查询；留空返回全部未正常设备。"""
+    records = training_room_records()
+    rooms = {item["room_id"]: item for item in records["rooms"]}
+    normalized = re.sub(r"\s+", "", query.strip().lower())
+    rows: list[dict[str, Any]] = []
+    for item in records["equipment"]:
+        searchable = " ".join(
+            str(item.get(field, ""))
+            for field in ("equipment_id", "name", "ticket_id", "room_id", "asset_status")
+        ).lower()
+        if normalized and normalized not in re.sub(r"\s+", "", searchable):
+            continue
+        if not normalized and item["asset_status"] == "在用":
+            continue
+        rows.append(
+            {
+                **item,
+                "room_name": rooms[item["room_id"]]["name"],
+                "room_location": f'{rooms[item["room_id"]]["building"]}{rooms[item["room_id"]]["room_number"]}',
+            }
+        )
+    if not rows:
+        raise ValueError(f"未找到与“{query}”匹配的设备或报修工单。")
+    return {
+        "query": query or "全部异常设备",
+        "equipment_count": len(rows),
+        "equipment": rows,
+        "recommendation": "设备维修中、待检修或停用时，应在正式场地排课前由实训中心确认替代设备或调整安排。",
+        "data_note": training_room_data_note(),
+    }
+
+
+@mcp.tool()
+def generate_training_room_safety_todos(room_query: str = "") -> dict[str, Any]:
+    """生成实训室安全巡检、整改与设备归还待办。可选指定 302、TR-302 或实训室名称。"""
+    records = training_room_records()
+    rooms = {item["room_id"]: item for item in records["rooms"]}
+    room_id = find_training_room(room_query)["room_id"] if room_query.strip() else ""
+    active_records = [
+        item
+        for item in records["safety_and_loans"]
+        if (not room_id or item["room_id"] == room_id)
+        and item["status"] not in ("已整改", "已归还")
+    ]
+    todos = [
+        {
+            "todo_id": item["record_id"],
+            "type": item["record_type"],
+            "room_name": rooms[item["room_id"]]["name"],
+            "subject": item["subject"],
+            "detail": item["detail"],
+            "status": item["status"],
+            "due_date": item["due_date"],
+            "responsible_role": item["responsible_role"],
+            "suggested_action": item["action"],
+        }
+        for item in sorted(active_records, key=lambda row: (row["due_date"], row["record_type"]))
+    ]
+    return {
+        "scope": rooms[room_id]["name"] if room_id else "全部实训室",
+        "todo_count": len(todos),
+        "todos": todos,
+        "recommendation": "请按截止时间核验整改、归还或设备检查结果；需要推送提醒时，应由用户明确指定接收群或接收对象。",
+        "data_note": training_room_data_note(),
     }
 
 
