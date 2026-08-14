@@ -120,12 +120,12 @@
     "notes": "新生适应期，建议班主任或辅导员进行适应性关怀。"
   },
   {
-    "student_id": "DEMO-S604-01",
-    "name": "示例学生甲",
+    "student_id": "60412401",
+    "name": "刘传昊",
     "grade": "2024级",
     "major": "移动应用开发",
     "class_name": "S604124移动",
-    "dorm": "演示数据",
+    "dorm": "班级演示台账",
     "attendance_absences_30d": 4,
     "late_count_30d": 2,
     "gpa_trend": "下降",
@@ -137,15 +137,15 @@
     "talk_records": 0,
     "last_followup": "",
     "care_level": "高关注",
-    "notes": "比赛录屏用脱敏治理样本，不对应真实学生。"
+    "notes": "比赛录屏用学生治理演示台账，需由授权人员结合实际业务记录复核。"
   },
   {
-    "student_id": "DEMO-S604-02",
-    "name": "示例学生乙",
+    "student_id": "60412411",
+    "name": "杨浩燃",
     "grade": "2024级",
     "major": "移动应用开发",
     "class_name": "S604124移动",
-    "dorm": "演示数据",
+    "dorm": "班级演示台账",
     "attendance_absences_30d": 2,
     "late_count_30d": 1,
     "gpa_trend": "稳定",
@@ -157,15 +157,15 @@
     "talk_records": 0,
     "last_followup": "",
     "care_level": "中关注",
-    "notes": "比赛录屏用脱敏治理样本，不对应真实学生。"
+    "notes": "比赛录屏用学生治理演示台账，需由授权人员结合实际业务记录复核。"
   },
   {
-    "student_id": "DEMO-S604-03",
-    "name": "示例学生丙",
+    "student_id": "60412437",
+    "name": "汪苗",
     "grade": "2024级",
     "major": "移动应用开发",
     "class_name": "S604124移动",
-    "dorm": "演示数据",
+    "dorm": "班级演示台账",
     "attendance_absences_30d": 1,
     "late_count_30d": 0,
     "gpa_trend": "下降",
@@ -177,6 +177,6 @@
     "talk_records": 1,
     "last_followup": "2026-08-10",
     "care_level": "中关注",
-    "notes": "比赛录屏用脱敏治理样本，不对应真实学生。"
+    "notes": "比赛录屏用学生治理演示台账，需由授权人员结合实际业务记录复核。"
   }
 ]
