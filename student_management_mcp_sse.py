@@ -750,12 +750,19 @@ def get_system_readiness() -> dict[str, Any]:
 def get_class_dashboard(class_name: str) -> dict[str, Any]:
     """按班级汇总关注等级、缺勤、实训异常和帮扶跟进情况。"""
     rows = [student for student in students() if student["class_name"] == class_name]
-    if not rows:
+    roster_rows = [student for student in roster_students() if student["class_name"] == class_name]
+    if not rows and not roster_rows:
         raise ValueError(f"未找到班级：{class_name}")
 
     levels = {"低关注": 0, "中关注": 0, "高关注": 0}
     for item in rows:
         levels[level_from_score(score_attention(item))] += 1
+
+    # 班级规模优先采用授权演示名册；未纳入治理样本的学生按常规关注统计。
+    roster_count = len(roster_rows)
+    student_count = roster_count or len(rows)
+    if roster_count > len(rows):
+        levels["低关注"] += roster_count - len(rows)
 
     student_ids = {item["student_id"] for item in rows}
     class_tasks = [
@@ -763,7 +770,7 @@ def get_class_dashboard(class_name: str) -> dict[str, Any]:
     ]
     return {
         "class_name": class_name,
-        "student_count": len(rows),
+        "student_count": student_count,
         "attention_levels": levels,
         "absence_total_30d": sum(int(item["attendance_absences_30d"]) for item in rows),
         "late_total_30d": sum(int(item["late_count_30d"]) for item in rows),
@@ -792,6 +799,12 @@ def get_class_dashboard(class_name: str) -> dict[str, Any]:
             ],
             key=lambda row: {"高关注": 3, "中关注": 2, "低关注": 1}[row["level"]],
             reverse=True,
+        ),
+        "data_note": (
+            "班级人数与专业信息来自授权演示名册；关注、考勤和实训指标来自比赛录屏用的脱敏治理样本，"
+            "仅用于辅助研判和功能展示，不作为真实学生认定依据。"
+            if roster_rows
+            else "该班级数据来自比赛演示治理样本，仅用于辅助研判和功能展示。"
         ),
     }
 
