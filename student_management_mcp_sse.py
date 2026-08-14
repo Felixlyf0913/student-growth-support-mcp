@@ -1289,6 +1289,29 @@ def generate_training_room_safety_todos(room_query: str = "") -> dict[str, Any]:
     }
 
 
+@mcp.tool()
+def get_class_training_operations_overview(
+    class_name: str,
+    start_date: str = "",
+    end_date: str = "",
+) -> dict[str, Any]:
+    """班级实训运行概览。用户问某班实训安排、实训室安全待办、设备归还或异常设备时优先调用；可选日期范围。"""
+    schedule_result = get_class_training_schedule(class_name, start_date, end_date)
+    todo_result = generate_training_room_safety_todos()
+    equipment_result = get_equipment_repair_status()
+    return {
+        "class_name": schedule_result["class_name"],
+        "training_schedule": schedule_result["schedules"],
+        "active_safety_and_return_todos": todo_result["todos"],
+        "abnormal_equipment": equipment_result["equipment"],
+        "recommendation": (
+            "建议按实训日期先核验场地和异常设备，再完成安全整改与借用设备归还；"
+            "涉及排课调整或设备停用时，应由实训中心管理员复核。"
+        ),
+        "data_note": training_room_data_note(),
+    }
+
+
 async def health(_request: Any) -> JSONResponse:
     return JSONResponse(
         {
