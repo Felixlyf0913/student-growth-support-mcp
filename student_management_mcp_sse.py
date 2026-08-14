@@ -943,9 +943,10 @@ def generate_and_send_class_weekly_report(
     class_name: str,
     target: str = "辅导员工作群",
     week_label: str = "本周",
+    push_to_dingtalk: bool = False,
     mention_all: bool = False,
 ) -> dict[str, Any]:
-    """生成隐去学生姓名的班级工作周报并推送钉钉，适合辅导员或班委工作群。"""
+    """生成匿名班级工作周报；仅在明确要求时推送钉钉，适合辅导员或班委工作群。"""
     roster = [item for item in roster_students() if item["class_name"] == class_name]
     risk_rows = [item for item in students() if item["class_name"] == class_name]
     if not roster and not risk_rows:
@@ -958,6 +959,8 @@ def generate_and_send_class_weekly_report(
     attention_levels = {"低关注": 0, "中关注": 0, "高关注": 0}
     for item in risk_rows:
         attention_levels[level_from_score(score_attention(item))] += 1
+    if roster_count > len(risk_rows):
+        attention_levels["低关注"] += roster_count - len(risk_rows)
 
     student_ids = {item["student_id"] for item in risk_rows}
     class_followups = [record for record in followups() if record["student_id"] in student_ids]
@@ -1000,19 +1003,34 @@ def generate_and_send_class_weekly_report(
         f"3. 更新帮扶记录和复访待办，形成闭环留痕。\n\n"
         f"> 本周报由校务智枢根据当前已接入数据自动生成，未展示学生姓名等敏感明细，请辅导员结合实际情况复核。"
     )
-    channel, result = send_dingtalk_markdown(
-        title,
-        report,
-        target,
-        "teacher",
-        None,
-        mention_all,
-    )
+    notification: dict[str, Any] = {
+        "requested": push_to_dingtalk,
+        "sent": False,
+        "channel": "",
+        "dingtalk_result": {},
+    }
+    if push_to_dingtalk:
+        channel, result = send_dingtalk_markdown(
+            title,
+            report,
+            target,
+            "teacher",
+            None,
+            mention_all,
+        )
+        notification.update(
+            {
+                "sent": result.get("errcode") == 0,
+                "channel": channel,
+                "dingtalk_result": result,
+            }
+        )
     return {
-        "sent": result.get("errcode") == 0,
+        "sent": notification["sent"],
+        "push_requested": push_to_dingtalk,
         "class_name": class_name,
         "target": target,
-        "channel": channel,
+        "channel": notification["channel"],
         "week_label": week_label,
         "mention_all": mention_all,
         "summary": {
@@ -1026,7 +1044,8 @@ def generate_and_send_class_weekly_report(
             "support_task_overdue_count": overdue_tasks,
         },
         "privacy": "公开周报未展示学生姓名和个人风险明细。",
-        "dingtalk_result": result,
+        "report": report,
+        "notification": notification,
     }
 
 
