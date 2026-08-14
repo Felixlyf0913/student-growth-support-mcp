@@ -82,6 +82,21 @@ def find_roster_student(query: str) -> dict[str, Any]:
     raise ValueError(f"未在真实名册中找到学生：{query}")
 
 
+def resolve_class_name(class_name: str) -> str:
+    """兼容自然语言中的班级后缀，如“S604124移动班”。"""
+    normalized = re.sub(r"\s+", "", class_name.strip())
+    class_names = {
+        item["class_name"] for item in students()
+    } | {
+        item["class_name"] for item in roster_students()
+    }
+    if normalized in class_names:
+        return normalized
+    if normalized.endswith("班") and normalized[:-1] in class_names:
+        return normalized[:-1]
+    return normalized
+
+
 def find_support_task(task_id: str, tasks: list[dict[str, Any]]) -> dict[str, Any]:
     normalized = task_id.strip().upper()
     for item in tasks:
@@ -770,6 +785,7 @@ def get_system_readiness() -> dict[str, Any]:
 @mcp.tool()
 def get_class_dashboard(class_name: str) -> dict[str, Any]:
     """按班级汇总关注等级、缺勤、实训异常和帮扶跟进情况。"""
+    class_name = resolve_class_name(class_name)
     rows = [student for student in students() if student["class_name"] == class_name]
     roster_rows = [student for student in roster_students() if student["class_name"] == class_name]
     if not rows and not roster_rows:
@@ -849,6 +865,7 @@ def get_roster_student(query: str) -> dict[str, Any]:
 @mcp.tool()
 def list_class_roster(class_name: str) -> dict[str, Any]:
     """按班级查询真实名册，返回学生列表和班级基础统计。"""
+    class_name = resolve_class_name(class_name)
     rows = [
         item for item in roster_students()
         if item["class_name"] == class_name
@@ -968,6 +985,7 @@ def generate_and_send_class_weekly_report(
     mention_all: bool = False,
 ) -> dict[str, Any]:
     """生成匿名班级工作周报；仅在明确要求时推送钉钉，适合辅导员或班委工作群。"""
+    class_name = resolve_class_name(class_name)
     roster = [item for item in roster_students() if item["class_name"] == class_name]
     risk_rows = [item for item in students() if item["class_name"] == class_name]
     if not roster and not risk_rows:
