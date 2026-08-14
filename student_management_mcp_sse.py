@@ -304,8 +304,29 @@ mcp = FastMCP(
 
 @mcp.tool()
 def get_student_profile(query: str) -> dict[str, Any]:
-    """按学号或姓名查询学生成长画像，并给出关注等级和帮扶建议。"""
-    item = find_student(query)
+    """按学号或姓名查询学生成长画像；真实名册未接入治理指标时仅返回基础信息。"""
+    try:
+        item = find_student(query)
+    except ValueError:
+        roster_item = find_roster_student(query)
+        return {
+            "student": {
+                "student_id": str(roster_item["student_id"]),
+                "name": roster_item["name"],
+                "grade": roster_item["grade"],
+                "major": roster_item["major"],
+                "class_name": roster_item["class_name"],
+                "college": roster_item["college"],
+            },
+            "computed_attention_score": None,
+            "computed_attention_level": "未评估",
+            "followup_records": [],
+            "suggested_actions": [
+                "当前仅接入该生的授权名册基础信息，尚未接入考勤、成绩、实训和帮扶指标。",
+                "如需开展治理研判，请由授权人员补充或同步对应业务台账后再查询。",
+            ],
+            "data_note": "该结果来自授权演示名册，不对真实学生作风险判断或帮扶任务建议。",
+        }
     related = [record for record in followups() if record["student_id"] == item["student_id"]]
     score = score_attention(item)
     return {
