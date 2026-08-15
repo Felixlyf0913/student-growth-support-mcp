@@ -22,7 +22,7 @@ from pypdf import PdfReader
 from persistent_store import PersistentStore
 
 
-SOURCE_VERSION = "2026-08-demo-v1"
+SOURCE_VERSION = "2026-08-demo-v2"
 SOURCE_LABEL = "比赛演示模拟业务台账"
 
 
@@ -37,7 +37,11 @@ def _number(value: Any) -> int:
         return 0
 
 
-def _rows_from_workbook(path: Path, sheet_name: str) -> list[dict[str, str]]:
+def _rows_from_workbook(
+    path: Path,
+    sheet_name: str,
+    header_key: str = "学号",
+) -> list[dict[str, str]]:
     workbook = load_workbook(path, data_only=True)
     if sheet_name not in workbook.sheetnames:
         raise ValueError(f"{path.name} 中未找到工作表：{sheet_name}")
@@ -48,12 +52,14 @@ def _rows_from_workbook(path: Path, sheet_name: str) -> list[dict[str, str]]:
     # table. Locate the actual header instead of imposing a machine-only file.
     for row_index in range(1, min(sheet.max_row, 12) + 1):
         candidate = [_text(cell.value) for cell in sheet[row_index]]
-        if "学号" in candidate:
+        if header_key in candidate:
             header_row = row_index
             headers = candidate
             break
     if not header_row:
-        raise ValueError(f"{path.name} 的工作表“{sheet_name}”未找到包含“学号”的表头行")
+        raise ValueError(
+            f"{path.name} 的工作表“{sheet_name}”未找到包含“{header_key}”的表头行"
+        )
     rows: list[dict[str, str]] = []
     for values in sheet.iter_rows(min_row=header_row + 1, values_only=True):
         row = {headers[index]: _text(value) for index, value in enumerate(values) if headers[index]}
@@ -259,6 +265,86 @@ def _normalize_tasks(rows: list[dict[str, str]], profiles: list[dict[str, Any]])
     return normalized
 
 
+def _normalize_training_rooms(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "room_id": row["实训室编号"],
+            "name": row["实训室名称"],
+            "building": row["所在楼宇"],
+            "room_number": row["房间号"],
+            "capacity": _number(row["容纳人数"]),
+            "equipment_summary": row["设备配置"],
+            "open_hours": row["开放时间"],
+            "status": row["开放状态"],
+            "source": "07_实训室资源与排课台账_2026年8月.xlsx",
+            "data_label": SOURCE_LABEL,
+        }
+        for row in rows
+    ]
+
+
+def _normalize_training_schedules(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "booking_id": row["排课编号"],
+            "date": row["日期"],
+            "start_time": row["开始时间"],
+            "end_time": row["结束时间"],
+            "room_id": row["实训室编号"],
+            "class_name": row["班级/使用单位"],
+            "activity": row["活动内容"],
+            "owner_role": row["申请角色"],
+            "status": row["安排状态"],
+            "approval": row["审批状态"],
+            "note": row["备注"],
+            "source": "07_实训室资源与排课台账_2026年8月.xlsx",
+            "data_label": SOURCE_LABEL,
+        }
+        for row in rows
+    ]
+
+
+def _normalize_training_equipment(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "equipment_id": row["设备编号"],
+            "name": row["设备名称"],
+            "model": row["设备型号"],
+            "room_id": row["实训室编号"],
+            "asset_status": row["设备状态"],
+            "last_maintenance": row["最近维保"],
+            "next_maintenance": row["下次维保"],
+            "ticket_id": row["报修工单"],
+            "issue": row["事项说明"],
+            "ticket_status": row["处理状态"],
+            "expected_complete_at": row["预计完成"],
+            "source": "07_实训室资源与排课台账_2026年8月.xlsx",
+            "data_label": SOURCE_LABEL,
+        }
+        for row in rows
+    ]
+
+
+def _normalize_training_safety_and_loans(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "record_id": row["记录编号"],
+            "record_type": row["记录类型"],
+            "date": row["日期"],
+            "room_id": row["实训室编号"],
+            "subject": row["事项"],
+            "detail": row["事项说明"],
+            "responsible_role": row["责任角色"],
+            "status": row["状态"],
+            "due_date": row["截止日期"],
+            "action": row["处理建议"],
+            "source": "07_实训室资源与排课台账_2026年8月.xlsx",
+            "data_label": SOURCE_LABEL,
+        }
+        for row in rows
+    ]
+
+
 def _build_alerts(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
     alerts: list[dict[str, Any]] = []
     for profile in profiles:
@@ -293,14 +379,18 @@ def _build_alerts(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def import_source_documents(store: PersistentStore, source_dir: Path) -> dict[str, Any]:
-    """Read six source documents and upsert their normalized records into storage."""
+    """Read office source ledgers and upsert their normalized records into storage."""
     roster_file = source_dir / "01_学生基础名册_比赛演示.xlsx"
     attendance_file = source_dir / "02_考勤与学业汇总_2026年8月.xlsx"
     training_file = source_dir / "03_实训日志与操作记录_2026年8月.xlsx"
     screening_file = source_dir / "04_心理筛查结果_2026年秋季.xlsx"
     talk_file = source_dir / "05_辅导员谈心谈话记录_2026年8月.docx"
     task_file = source_dir / "06_学生帮扶任务清单_2026年8月.pdf"
-    required = (roster_file, attendance_file, training_file, screening_file, talk_file, task_file)
+    room_ledger_file = source_dir / "07_实训室资源与排课台账_2026年8月.xlsx"
+    required = (
+        roster_file, attendance_file, training_file, screening_file, talk_file,
+        task_file, room_ledger_file,
+    )
     missing = [path.name for path in required if not path.exists()]
     if missing:
         raise FileNotFoundError(f"缺少待导入的演示源文件：{'、'.join(missing)}")
@@ -311,6 +401,18 @@ def import_source_documents(store: PersistentStore, source_dir: Path) -> dict[st
     screening = _rows_from_workbook(screening_file, "心理筛查")
     talks = _rows_from_docx(talk_file)
     tasks = _rows_from_pdf(task_file)
+    training_rooms = _normalize_training_rooms(
+        _rows_from_workbook(room_ledger_file, "实训室资源", "实训室编号")
+    )
+    training_schedules = _normalize_training_schedules(
+        _rows_from_workbook(room_ledger_file, "场地排课", "排课编号")
+    )
+    training_equipment = _normalize_training_equipment(
+        _rows_from_workbook(room_ledger_file, "设备状态", "设备编号")
+    )
+    training_safety_and_loans = _normalize_training_safety_and_loans(
+        _rows_from_workbook(room_ledger_file, "安全与借用", "记录编号")
+    )
     profiles = _build_profiles(roster, attendance, training, screening, talks)
     normalized_roster = _normalize_roster(roster)
     normalized_followups = _normalize_followups(talks)
@@ -326,6 +428,10 @@ def import_source_documents(store: PersistentStore, source_dir: Path) -> dict[st
         ("support_tasks", normalized_tasks, "task_id"),
         ("student_profiles", profiles, "student_id"),
         ("risk_alerts", alerts, "alert_id"),
+        ("training_rooms", training_rooms, "room_id"),
+        ("training_room_schedules", training_schedules, "booking_id"),
+        ("training_room_equipment", training_equipment, "equipment_id"),
+        ("training_room_safety_and_loans", training_safety_and_loans, "record_id"),
     )
     for bucket, rows, id_field in source_sets:
         for row in rows:
@@ -338,9 +444,12 @@ def import_source_documents(store: PersistentStore, source_dir: Path) -> dict[st
         _document_manifest(screening_file, len(screening), "心理筛查台账"),
         _document_manifest(talk_file, len(talks), "谈心谈话记录"),
         _document_manifest(task_file, len(tasks), "帮扶任务清单"),
+        _document_manifest(room_ledger_file, len(training_rooms) + len(training_schedules) + len(training_equipment) + len(training_safety_and_loans), "实训室资源与排课台账"),
     )
-    for manifest in manifests:
-        store.upsert_record("source_documents", manifest["document_id"], manifest)
+    # A source version supersedes the prior file manifest. Runtime follow-ups
+    # and support tasks are kept in their own buckets, so this only prevents
+    # stale file checksums from being shown as duplicate imported documents.
+    store.replace_records("source_documents", list(manifests), "document_id")
     store.set_metadata("source_document_seed_version", SOURCE_VERSION)
     return {
         "source_version": SOURCE_VERSION,
@@ -353,6 +462,10 @@ def import_source_documents(store: PersistentStore, source_dir: Path) -> dict[st
         "followup_records": len(talks),
         "support_tasks": len(tasks),
         "risk_alerts": len(alerts),
+        "training_rooms": len(training_rooms),
+        "training_room_schedules": len(training_schedules),
+        "training_room_equipment": len(training_equipment),
+        "training_room_safety_and_loans": len(training_safety_and_loans),
     }
 
 

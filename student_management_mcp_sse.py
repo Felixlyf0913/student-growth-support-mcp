@@ -76,6 +76,14 @@ def support_tasks() -> list[dict[str, Any]]:
 
 
 def training_room_records() -> dict[str, list[dict[str, Any]]]:
+    imported_rooms = STORE.list_records("training_rooms")
+    if imported_rooms:
+        return {
+            "rooms": imported_rooms,
+            "schedules": STORE.list_records("training_room_schedules"),
+            "equipment": STORE.list_records("training_room_equipment"),
+            "safety_and_loans": STORE.list_records("training_room_safety_and_loans"),
+        }
     if not TRAINING_ROOM_FILE.exists():
         return {"rooms": [], "schedules": [], "equipment": [], "safety_and_loans": []}
     return load_json(TRAINING_ROOM_FILE)
@@ -108,6 +116,53 @@ def time_to_minutes(value: str) -> int:
         raise ValueError("时间必须使用 HH:MM 格式，例如 14:00。")
     hour, minute = normalized.split(":")
     return int(hour) * 60 + int(minute)
+
+
+def room_availability_details(
+    room: dict[str, Any],
+    date: str,
+    requested_start: int,
+    requested_end: int,
+) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]], str]:
+    """Return the booking state for one room without exposing a write operation."""
+    bookings = [
+        item
+        for item in training_room_records()["schedules"]
+        if item["room_id"] == room["room_id"] and item["date"] == date
+    ]
+    conflicts: list[dict[str, Any]] = []
+    pending: list[dict[str, Any]] = []
+    for booking in bookings:
+        overlap = (
+            requested_start < time_to_minutes(booking["end_time"])
+            and requested_end > time_to_minutes(booking["start_time"])
+        )
+        if not overlap:
+            continue
+        if booking["approval"] == "已通过":
+            conflicts.append(booking)
+        else:
+            pending.append(booking)
+    if conflicts:
+        return (
+            "已占用",
+            conflicts,
+            pending,
+            "该时段已有已通过排课或预约，建议更换时段或联系实训中心管理员协调。",
+        )
+    if pending:
+        return (
+            "待确认",
+            conflicts,
+            pending,
+            "该时段存在待审核预约，建议先核实审批结果后再安排使用。",
+        )
+    return (
+        "可预约",
+        conflicts,
+        pending,
+        "当前演示台账未发现冲突记录，正式预约仍需按学校场地审批流程办理。",
+    )
 
 
 def initialize_storage_from_legacy_json() -> None:
@@ -614,6 +669,10 @@ def get_data_ingestion_status() -> dict[str, Any]:
             "followups": STORE.count_records("followups"),
             "support_tasks": STORE.count_records("support_tasks"),
             "risk_alerts": STORE.count_records("risk_alerts"),
+            "training_rooms": STORE.count_records("training_rooms"),
+            "training_room_schedules": STORE.count_records("training_room_schedules"),
+            "training_room_equipment": STORE.count_records("training_room_equipment"),
+            "training_room_safety_and_loans": STORE.count_records("training_room_safety_and_loans"),
         },
         "workflow": [
             "工作人员维护 Excel、Word、PDF 业务台账",
@@ -1465,34 +1524,14 @@ def get_training_room_availability(
         raise ValueError("结束时间必须晚于开始时间。")
 
     room = find_training_room(room_query)
+    availability, conflicts, pending, recommendation = room_availability_details(
+        room, date.strip(), requested_start, requested_end
+    )
     bookings = [
         item
         for item in training_room_records()["schedules"]
         if item["room_id"] == room["room_id"] and item["date"] == date.strip()
     ]
-    conflicts: list[dict[str, Any]] = []
-    pending: list[dict[str, Any]] = []
-    for booking in bookings:
-        overlap = (
-            requested_start < time_to_minutes(booking["end_time"])
-            and requested_end > time_to_minutes(booking["start_time"])
-        )
-        if not overlap:
-            continue
-        if booking["approval"] == "已通过":
-            conflicts.append(booking)
-        else:
-            pending.append(booking)
-
-    if conflicts:
-        availability = "已占用"
-        recommendation = "该时段已有已通过排课或预约，建议更换时段或联系实训中心管理员协调。"
-    elif pending:
-        availability = "待确认"
-        recommendation = "该时段存在待审核预约，建议先核实审批结果后再安排使用。"
-    else:
-        availability = "可预约"
-        recommendation = "当前演示台账未发现冲突记录，正式预约仍需按学校场地审批流程办理。"
 
     return {
         "room": room,
@@ -1503,6 +1542,81 @@ def get_training_room_availability(
         "pending_bookings": pending,
         "day_bookings": bookings,
         "recommendation": recommendation,
+        "data_note": training_room_data_note(),
+    }
+
+
+@mcp.tool()
+def list_available_training_rooms(
+    date: str,
+    start_time: str,
+    end_time: str,
+    min_capacity: int = 0,
+    equipment_keyword: str = "",
+) -> dict[str, Any]:
+    """查询某日某时段可用实训室。学生或教师问“哪个实训室有空”“有没有能容纳40人的实训室”“某时段哪里可预约”时调用。可按最小容量和设备关键词筛选。"""
+    try:
+        datetime.strptime(date.strip(), "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError("日期必须使用 YYYY-MM-DD 格式，例如 2026-08-19。") from exc
+    requested_start = time_to_minutes(start_time)
+    requested_end = time_to_minutes(end_time)
+    if requested_start >= requested_end:
+        raise ValueError("结束时间必须晚于开始时间。")
+    if min_capacity < 0:
+        raise ValueError("最小容量不能小于 0。")
+
+    keyword = re.sub(r"\s+", "", equipment_keyword.lower())
+    available_rooms: list[dict[str, Any]] = []
+    pending_rooms: list[dict[str, Any]] = []
+    occupied_rooms: list[dict[str, Any]] = []
+    for room in training_room_records()["rooms"]:
+        if room.get("status") not in ("正常开放", "部分开放"):
+            continue
+        if int(room.get("capacity", 0)) < min_capacity:
+            continue
+        searchable = re.sub(
+            r"\s+", "", f"{room['name']} {room['equipment_summary']}".lower()
+        )
+        if keyword and keyword not in searchable:
+            continue
+        availability, conflicts, pending, recommendation = room_availability_details(
+            room, date.strip(), requested_start, requested_end
+        )
+        item = {
+            "room_id": room["room_id"],
+            "room_name": room["name"],
+            "location": f"{room['building']}{room['room_number']}",
+            "capacity": room["capacity"],
+            "equipment_summary": room["equipment_summary"],
+            "open_hours": room["open_hours"],
+            "availability": availability,
+            "conflicting_bookings": conflicts,
+            "pending_bookings": pending,
+            "recommendation": recommendation,
+        }
+        if availability == "可预约":
+            available_rooms.append(item)
+        elif availability == "待确认":
+            pending_rooms.append(item)
+        else:
+            occupied_rooms.append(item)
+    if not available_rooms and not pending_rooms and not occupied_rooms:
+        raise ValueError("未找到符合容量、设备或开放状态条件的实训室。")
+    return {
+        "query_date": date.strip(),
+        "requested_time": f"{start_time.strip()}-{end_time.strip()}",
+        "filters": {
+            "min_capacity": min_capacity or "不限",
+            "equipment_keyword": equipment_keyword or "不限",
+        },
+        "available_room_count": len(available_rooms),
+        "available_rooms": available_rooms,
+        "pending_room_count": len(pending_rooms),
+        "pending_rooms": pending_rooms,
+        "occupied_room_count": len(occupied_rooms),
+        "occupied_rooms": occupied_rooms,
+        "recommendation": "结果基于比赛演示台账；选择场地后，仍需按学校正式预约与审批流程办理。",
         "data_note": training_room_data_note(),
     }
 
@@ -1651,6 +1765,8 @@ async def health(_request: Any) -> JSONResponse:
                 "source_documents": STORE.count_records("source_documents"),
                 "student_profiles": STORE.count_records("student_profiles"),
                 "risk_alerts": STORE.count_records("risk_alerts"),
+                "training_rooms": STORE.count_records("training_rooms"),
+                "training_room_schedules": STORE.count_records("training_room_schedules"),
             },
         }
     )

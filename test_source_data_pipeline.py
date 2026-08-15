@@ -21,10 +21,14 @@ class SourceDataPipelineTests(unittest.TestCase):
         result = import_source_documents(self.store, self.source_dir)
 
         self.assertEqual(result["source_version"], SOURCE_VERSION)
-        self.assertEqual(result["documents"], 6)
+        self.assertEqual(result["documents"], 7)
         self.assertEqual(result["roster_students"], 199)
         self.assertEqual(self.store.count_records("student_profiles"), 199)
         self.assertEqual(self.store.count_records("risk_alerts"), 5)
+        self.assertEqual(self.store.count_records("training_rooms"), 5)
+        self.assertEqual(self.store.count_records("training_room_schedules"), 10)
+        self.assertEqual(self.store.count_records("training_room_equipment"), 8)
+        self.assertEqual(self.store.count_records("training_room_safety_and_loans"), 6)
         profile = next(
             item
             for item in self.store.list_records("student_profiles")

@@ -30,6 +30,10 @@
 | `get_class_operational_records` | 查询班级动态台账和治理概览 |
 | `list_followup_reminders` | 查询即将到期或逾期的复访提醒 |
 | `generate_and_send_class_weekly_report` | 生成匿名班级周报并推送教师工作群 |
+| `get_training_room_availability` | 查询指定实训室在指定时段是否有排课或预约冲突 |
+| `list_available_training_rooms` | 按日期、时段、容量和设备条件筛选可用实训室 |
+| `get_class_training_schedule` | 查询班级实训安排与场地信息 |
+| `get_equipment_repair_status` | 查询异常设备、报修工单与预计处理状态 |
 
 ## 本地运行
 
@@ -49,7 +53,7 @@ python -m uvicorn student_management_mcp_sse:app --host 127.0.0.1 --port 8000
 - 配置 `DATABASE_URL` 时使用 PostgreSQL，源台账入库、任务、跟进记录和审计台账可跨 Render 部署保留。
 - 未配置时自动使用 `.data/student_management.db` 本地 SQLite，适合开发测试，但 Render 重新部署后可能丢失。
 - 首次启用数据库时会自动迁移仓库内 `followup_records.json` 和 `support_tasks.json` 的基础数据。
-- 首次部署还会读取 `演示业务源文件` 中的 4 份 Excel、1 份 Word 和 1 份 PDF，将比赛演示名册、考勤学业、实训、筛查建议、谈话和任务记录规范化后写入数据库；后续 MCP 新增的谈话和任务会继续累积。
+- 首次部署还会读取 `演示业务源文件` 中的 5 份 Excel、1 份 Word 和 1 份 PDF，将比赛演示名册、考勤学业、实训、筛查建议、谈话、任务以及实训室资源排课台账规范化后写入数据库；后续 MCP 新增的谈话和任务会继续累积。
 - 健康检查 `/health` 会返回存储类型和记录数量，但不会返回数据库地址或钉钉密钥。
 
 PostgreSQL 连接变量示例：
@@ -68,6 +72,7 @@ DATABASE_URL=postgresql://用户名:密码@主机:5432/数据库名
   -> 班级态势与学生成长时间线
   -> 生成帮扶任务并回写谈话记录
   -> 按期复访提醒与任务审计
+  -> 按日期、时段、容量和设备条件查询可用实训室
 ```
 
 可先调用 `get_data_ingestion_status` 展示文件、入库数量和数据链路，再按角色调用受控查询工具：

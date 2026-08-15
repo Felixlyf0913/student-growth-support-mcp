@@ -22,6 +22,7 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = BASE_DIR / "演示业务源文件"
 ROSTER_FILE = BASE_DIR / "roster_students.json"
+TRAINING_ROOM_FILE = BASE_DIR / "training_room_records.json"
 SOURCE_NOTE = "比赛演示模拟数据：用于功能验证、录屏和答辩展示，不对应真实个人。"
 
 
@@ -84,6 +85,50 @@ def write_xlsx(path: Path, sheet_name: str, headers: list[str], rows: list[dict[
         if header in ("班级", "专业"):
             width = 18
         sheet.column_dimensions[get_column_letter(index)].width = width
+    workbook.save(path)
+
+
+def write_multi_sheet_xlsx(
+    path: Path,
+    sheets: list[tuple[str, list[str], list[dict[str, str]]]],
+) -> None:
+    """Write a staff-maintainable workbook with a title/note on every ledger sheet."""
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    for sheet_name, headers, rows in sheets:
+        sheet = workbook.create_sheet(sheet_name)
+        title = f"浙江经济职业技术学院 {sheet_name}（比赛演示）"
+        sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
+        cell = sheet.cell(1, 1, title)
+        cell.font = Font(size=14, bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="1F4E78")
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        sheet.row_dimensions[1].height = 28
+        sheet.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(headers))
+        note = sheet.cell(2, 1, SOURCE_NOTE)
+        note.font = Font(size=10, color="666666")
+        note.alignment = Alignment(horizontal="left", vertical="center")
+        sheet.row_dimensions[2].height = 22
+        for index, header in enumerate(headers, start=1):
+            header_cell = sheet.cell(3, index, header)
+            header_cell.font = Font(bold=True, color="FFFFFF")
+            header_cell.fill = PatternFill("solid", fgColor="2F75B5")
+            header_cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        for row_index, row in enumerate(rows, start=4):
+            for col_index, header in enumerate(headers, start=1):
+                data_cell = sheet.cell(row_index, col_index, row.get(header, ""))
+                data_cell.alignment = Alignment(vertical="center", wrap_text=True)
+                if row_index % 2 == 0:
+                    data_cell.fill = PatternFill("solid", fgColor="EAF2F8")
+        sheet.freeze_panes = "A4"
+        sheet.auto_filter.ref = f"A3:{get_column_letter(len(headers))}{len(rows) + 3}"
+        for index, header in enumerate(headers, start=1):
+            width = max(len(header) * 2.2, 12)
+            if header in ("设备配置", "事项说明", "处理建议", "备注"):
+                width = 34
+            if header in ("实训室名称", "班级/使用单位", "活动内容"):
+                width = 24
+            sheet.column_dimensions[get_column_letter(index)].width = width
     workbook.save(path)
 
 
@@ -202,7 +247,83 @@ def build_documents() -> list[Path]:
     flow.append(Spacer(1, 0.2 * cm))
     flow.append(Paragraph("说明：帮扶任务应由授权人员结合正式业务系统复核，任何预警不构成对学生的标签或最终认定。", style))
     doc.build(flow)
-    return [roster_file, attendance_file, training_file, screening_file, talk_file, task_file]
+
+    # A common office workflow is maintained as an Excel workbook by the
+    # training center. The importer turns the four sheets into queryable data.
+    training_room_data = json.loads(TRAINING_ROOM_FILE.read_text(encoding="utf-8"))
+    rooms_by_id = {item["room_id"]: item for item in training_room_data["rooms"]}
+    room_rows = [
+        {
+            "实训室编号": item["room_id"],
+            "实训室名称": item["name"],
+            "所在楼宇": item["building"],
+            "房间号": item["room_number"],
+            "容纳人数": str(item["capacity"]),
+            "设备配置": item["equipment_summary"],
+            "开放时间": item["open_hours"],
+            "开放状态": item["status"],
+        }
+        for item in training_room_data["rooms"]
+    ]
+    schedule_rows = [
+        {
+            "排课编号": item["booking_id"],
+            "日期": item["date"],
+            "开始时间": item["start_time"],
+            "结束时间": item["end_time"],
+            "实训室编号": item["room_id"],
+            "实训室名称": rooms_by_id[item["room_id"]]["name"],
+            "班级/使用单位": item["class_name"],
+            "活动内容": item["activity"],
+            "申请角色": item["owner_role"],
+            "安排状态": item["status"],
+            "审批状态": item["approval"],
+            "备注": item["note"],
+        }
+        for item in training_room_data["schedules"]
+    ]
+    equipment_rows = [
+        {
+            "设备编号": item["equipment_id"],
+            "设备名称": item["name"],
+            "设备型号": item["model"],
+            "实训室编号": item["room_id"],
+            "设备状态": item["asset_status"],
+            "最近维保": item["last_maintenance"],
+            "下次维保": item["next_maintenance"],
+            "报修工单": item.get("ticket_id", ""),
+            "事项说明": item.get("issue", ""),
+            "处理状态": item.get("ticket_status", ""),
+            "预计完成": item.get("expected_complete_at", ""),
+        }
+        for item in training_room_data["equipment"]
+    ]
+    safety_rows = [
+        {
+            "记录编号": item["record_id"],
+            "记录类型": item["record_type"],
+            "日期": item["date"],
+            "实训室编号": item["room_id"],
+            "事项": item["subject"],
+            "事项说明": item["detail"],
+            "责任角色": item["responsible_role"],
+            "状态": item["status"],
+            "截止日期": item["due_date"],
+            "处理建议": item["action"],
+        }
+        for item in training_room_data["safety_and_loans"]
+    ]
+    room_ledger_file = OUTPUT_DIR / "07_实训室资源与排课台账_2026年8月.xlsx"
+    write_multi_sheet_xlsx(
+        room_ledger_file,
+        [
+            ("实训室资源", list(room_rows[0]), room_rows),
+            ("场地排课", list(schedule_rows[0]), schedule_rows),
+            ("设备状态", list(equipment_rows[0]), equipment_rows),
+            ("安全与借用", list(safety_rows[0]), safety_rows),
+        ],
+    )
+    return [roster_file, attendance_file, training_file, screening_file, talk_file, task_file, room_ledger_file]
 
 
 if __name__ == "__main__":
