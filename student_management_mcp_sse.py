@@ -17,6 +17,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
 from persistent_store import PersistentStore
+from role_access import require_role_session, verify_demo_identity
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -351,6 +352,70 @@ mcp = FastMCP(
     message_path="/messages/",
     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
 )
+
+
+@mcp.tool()
+def verify_role_access(account_id: str, verification_code: str) -> dict[str, Any]:
+    """核验比赛演示身份并签发30分钟角色令牌。账号示例：S004-DEMO、HT-S604124、CO-DIGITAL、AD-DIGITAL、OP-TRAINING。正式环境应对接学校统一身份认证。"""
+    return verify_demo_identity(account_id, verification_code)
+
+
+@mcp.tool()
+def get_role_access_status(session_token: str) -> dict[str, Any]:
+    """查询当前已核验角色、数据范围和可用能力；不要向最终用户展示完整令牌。"""
+    session = require_role_session(
+        session_token,
+        ("student", "head_teacher", "counselor", "administrator", "service_staff"),
+    )
+    return {
+        "verified": True,
+        "display_role": session["display_role"],
+        "display_name": session["display_name"],
+        "allowed_classes": session["allowed_classes"],
+        "capabilities": session["capabilities"],
+        "session_valid": True,
+        "note": "敏感治理数据仅在已核验角色和授权范围内展示；正式上线应使用学校统一身份认证。",
+    }
+
+
+@mcp.tool()
+def get_authorized_student_profile(session_token: str, query: str) -> dict[str, Any]:
+    """按已核验角色查询学生画像。学生仅可查本人；班主任限本班；辅导员限授权班级；行政人员不返回个人风险明细。"""
+    student = find_student(query)
+    session = require_role_session(
+        session_token,
+        ("student", "head_teacher", "counselor", "administrator"),
+        target_student_id=student["student_id"],
+        target_class_name=student["class_name"],
+    )
+    if session["role"] == "administrator":
+        return {
+            "access": "aggregate_only",
+            "message": "行政管理人员默认仅可查看匿名班级聚合态势，不展示学生个人风险画像。请改为查询班级匿名看板。",
+        }
+    result = get_student_profile(query)
+    result["access"] = {"role": session["display_role"], "scope": "本人" if session["role"] == "student" else "授权班级"}
+    return result
+
+
+@mcp.tool()
+def get_authorized_class_dashboard(session_token: str, class_name: str) -> dict[str, Any]:
+    """按已核验角色查看班级态势。班主任和辅导员限授权班级；行政人员默认返回匿名聚合数据。"""
+    normalized_class = resolve_class_name(class_name)
+    session = require_role_session(
+        session_token,
+        ("head_teacher", "counselor", "administrator"),
+        target_class_name=normalized_class,
+    )
+    result = get_class_dashboard(normalized_class)
+    if session["role"] == "administrator":
+        result["top_attention_students"] = [
+            {"level": item["level"], "reasons": item["reasons"]}
+            for item in result["top_attention_students"]
+        ]
+        result["privacy"] = "行政视图已做匿名化处理，不展示学生姓名和学号。"
+    result["access"] = {"role": session["display_role"], "scope": "授权班级"}
+    return result
 
 
 @mcp.tool()
