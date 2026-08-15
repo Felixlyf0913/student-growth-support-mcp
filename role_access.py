@@ -28,6 +28,14 @@ DEMO_IDENTITIES: dict[str, dict[str, Any]] = {
         "allowed_classes": [],
         "capabilities": ["校内政策咨询", "本人基础画像", "实训日志填写", "宿舍报修引导"],
     },
+    "ST-60412403": {
+        "role": "student",
+        "display_role": "学生",
+        "display_name": "S604124移动班学生演示账号",
+        "student_id": "60412403",
+        "allowed_classes": [],
+        "capabilities": ["校内政策咨询", "本人基础画像", "本人跟进记录", "实训日志填写", "宿舍报修引导"],
+    },
     "HT-S604124": {
         "role": "head_teacher",
         "display_role": "班主任",
@@ -41,7 +49,7 @@ DEMO_IDENTITIES: dict[str, dict[str, Any]] = {
         "display_role": "辅导员",
         "display_name": "数字技术学院辅导员演示账号",
         "student_id": "",
-        "allowed_classes": ["电商2403", "S604124移动", "智能制造2401", "数媒2302", "机电2301", "大数据2501"],
+        "allowed_classes": ["P603124数媒", "P603223数媒", "S603323数媒", "S604124移动", "W602325网络", "W602425网络"],
         "capabilities": ["学生画像", "关注名单", "帮扶任务", "班级周报", "协同触达"],
     },
     "AD-DIGITAL": {

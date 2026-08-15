@@ -5,6 +5,7 @@ import os
 import re
 import urllib.error
 import urllib.request
+from calendar import monthrange
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +17,12 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
+from demo_source_pipeline import (
+    SOURCE_LABEL,
+    SOURCE_VERSION,
+    import_source_documents,
+    next_followup_reminders,
+)
 from persistent_store import PersistentStore
 from role_access import require_role_session, verify_demo_identity
 
@@ -26,6 +33,7 @@ FOLLOWUP_FILE = BASE_DIR / "followup_records.json"
 ROSTER_FILE = BASE_DIR / "roster_students.json"
 SUPPORT_TASK_FILE = BASE_DIR / "support_tasks.json"
 TRAINING_ROOM_FILE = BASE_DIR / "training_room_records.json"
+SOURCE_DOCUMENT_DIR = BASE_DIR / "演示业务源文件"
 SQLITE_FILE = BASE_DIR / ".data" / "student_management.db"
 
 STORE = PersistentStore(sqlite_path=SQLITE_FILE)
@@ -38,6 +46,15 @@ def load_json(path: Path) -> Any:
 
 
 def students() -> list[dict[str, Any]]:
+    imported = STORE.list_records("student_profiles")
+    if imported:
+        # Dynamic profiles take precedence, while legacy synthetic cases remain
+        # available for the explicit crisis-routing demonstration.
+        imported_ids = {item["student_id"] for item in imported}
+        return imported + [
+            item for item in load_json(STUDENT_FILE)
+            if item["student_id"] not in imported_ids
+        ]
     return load_json(STUDENT_FILE)
 
 
@@ -46,6 +63,9 @@ def followups() -> list[dict[str, Any]]:
 
 
 def roster_students() -> list[dict[str, Any]]:
+    imported = STORE.list_records("roster_students")
+    if imported:
+        return imported
     if not ROSTER_FILE.exists():
         return []
     return load_json(ROSTER_FILE)
@@ -103,6 +123,16 @@ def initialize_storage_from_legacy_json() -> None:
 initialize_storage_from_legacy_json()
 
 
+def initialize_source_document_import() -> None:
+    """Seed the durable store from packaged office ledgers on first deployment."""
+    if STORE.get_metadata("source_document_seed_version") == SOURCE_VERSION:
+        return
+    import_source_documents(STORE, SOURCE_DOCUMENT_DIR)
+
+
+initialize_source_document_import()
+
+
 def find_student(query: str) -> dict[str, Any]:
     query = query.strip()
     for item in students():
@@ -116,7 +146,7 @@ def find_roster_student(query: str) -> dict[str, Any]:
     for item in roster_students():
         if item["student_id"] == query or item["name"] == query:
             return item
-    raise ValueError(f"未在真实名册中找到学生：{query}")
+    raise ValueError(f"未在比赛演示名册中找到学生：{query}")
 
 
 def resolve_class_name(class_name: str) -> str:
@@ -149,6 +179,25 @@ def normalize_due_date(value: str) -> str:
     except ValueError as exc:
         raise ValueError("完成期限必须使用 YYYY-MM-DD 格式。") from exc
     return normalized
+
+
+def normalize_optional_date(value: str, field_name: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        return ""
+    try:
+        datetime.strptime(normalized, "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError(f"{field_name}必须使用 YYYY-MM-DD 格式。") from exc
+    return normalized
+
+
+def add_months(base: datetime, months: int) -> str:
+    target_month = base.month - 1 + months
+    year = base.year + target_month // 12
+    month = target_month % 12 + 1
+    day = min(base.day, monthrange(year, month)[1])
+    return f"{year:04d}-{month:02d}-{day:02d}"
 
 
 def summarize_task_status(items: list[dict[str, Any]]) -> dict[str, int]:
@@ -452,8 +501,65 @@ def get_authorized_class_dashboard(session_token: str, class_name: str) -> dict[
 
 
 @mcp.tool()
+def get_authorized_student_growth_timeline(session_token: str, query: str) -> dict[str, Any]:
+    """按已核验角色查询学生业务时间线。学生仅本人；班主任和辅导员限授权班级；行政人员不返回个人明细。"""
+    student = find_student(query)
+    session = require_role_session(
+        session_token,
+        ("student", "head_teacher", "counselor", "administrator"),
+        target_student_id=student["student_id"],
+        target_class_name=student["class_name"],
+    )
+    if session["role"] == "administrator":
+        return {
+            "access": "aggregate_only",
+            "message": "行政管理人员默认仅查看匿名班级聚合态势，不展示个人考勤、筛查、谈话或帮扶时间线。",
+        }
+    result = get_student_growth_timeline(query)
+    result["access"] = {"role": session["display_role"], "scope": "本人" if session["role"] == "student" else "授权班级"}
+    return result
+
+
+@mcp.tool()
+def get_authorized_class_operational_records(session_token: str, class_name: str) -> dict[str, Any]:
+    """按已核验角色查询班级动态台账。班主任和辅导员限授权班级；行政人员仅返回匿名聚合态势。"""
+    normalized_class = resolve_class_name(class_name)
+    session = require_role_session(
+        session_token,
+        ("head_teacher", "counselor", "administrator"),
+        target_class_name=normalized_class,
+    )
+    if session["role"] == "administrator":
+        dashboard = get_authorized_class_dashboard(session_token, normalized_class)
+        return {
+            "access": "aggregate_only",
+            "dashboard": dashboard,
+            "message": "行政视图已做匿名化处理，不展示学生个人考勤、筛查、谈话和任务明细。",
+        }
+    result = get_class_operational_records(normalized_class)
+    result["access"] = {"role": session["display_role"], "scope": "授权班级"}
+    return result
+
+
+@mcp.tool()
+def list_authorized_followup_reminders(session_token: str, days: int = 14) -> dict[str, Any]:
+    """按已核验角色查看复访提醒。班主任仅本班，辅导员仅授权班级。"""
+    session = require_role_session(session_token, ("head_teacher", "counselor"))
+    result = list_followup_reminders(days)
+    allowed = set(session["allowed_classes"])
+    result["items"] = [
+        item for item in result["items"]
+        if "*" in allowed or item["class_name"] in allowed
+    ]
+    result["total"] = len(result["items"])
+    result["overdue_count"] = sum(1 for item in result["items"] if item["status"] == "已逾期")
+    result["access"] = {"role": session["display_role"], "scope": "授权班级"}
+    return result
+
+
+@mcp.tool()
 def get_student_profile(query: str) -> dict[str, Any]:
-    """按学号或姓名查询学生成长画像；真实名册未接入治理指标时仅返回基础信息。"""
+    """按学号或姓名查询学生成长画像；优先使用已从演示业务台账导入 PostgreSQL 的动态数据。"""
     try:
         item = find_student(query)
     except ValueError:
@@ -471,10 +577,10 @@ def get_student_profile(query: str) -> dict[str, Any]:
             "computed_attention_level": "未评估",
             "followup_records": [],
             "suggested_actions": [
-                "当前仅接入该生的授权名册基础信息，尚未接入考勤、成绩、实训和帮扶指标。",
+                "当前仅接入该生的比赛演示名册基础信息，尚未接入考勤、成绩、实训和帮扶指标。",
                 "如需开展治理研判，请由授权人员补充或同步对应业务台账后再查询。",
             ],
-            "data_note": "该结果来自授权演示名册，不对真实学生作风险判断或帮扶任务建议。",
+            "data_note": "该结果来自比赛演示名册，不对真实个人作风险判断或帮扶任务建议。",
         }
     related = [record for record in followups() if record["student_id"] == item["student_id"]]
     score = score_attention(item)
@@ -484,6 +590,107 @@ def get_student_profile(query: str) -> dict[str, Any]:
         "computed_attention_level": attention_level_for(item),
         "followup_records": related,
         "suggested_actions": suggest_actions(item, score),
+        "data_note": (
+            "基础名册、考勤与学业、实训、筛查和谈话记录均来自项目文件夹的比赛演示模拟业务台账，"
+            "已导入 PostgreSQL；预警只用于提示核实与帮扶分流，不构成诊断或最终认定。"
+        ),
+    }
+
+
+@mcp.tool()
+def get_data_ingestion_status() -> dict[str, Any]:
+    """查询项目文件夹业务台账的入库状态、文件清单和 PostgreSQL 记录数量，不返回连接信息。"""
+    manifests = STORE.list_records("source_documents")
+    return {
+        "source_label": SOURCE_LABEL,
+        "source_version": STORE.get_metadata("source_document_seed_version"),
+        "storage_backend": STORE.label,
+        "documents": manifests,
+        "record_counts": {
+            "roster_students": STORE.count_records("roster_students"),
+            "attendance_records": STORE.count_records("attendance_records"),
+            "training_operation_records": STORE.count_records("training_operation_records"),
+            "psychological_screenings": STORE.count_records("psychological_screenings"),
+            "followups": STORE.count_records("followups"),
+            "support_tasks": STORE.count_records("support_tasks"),
+            "risk_alerts": STORE.count_records("risk_alerts"),
+        },
+        "workflow": [
+            "工作人员维护 Excel、Word、PDF 业务台账",
+            "服务自动解析并规范化入库 PostgreSQL",
+            "智能体按角色范围检索班级、学生、任务和提醒",
+            "谈心与任务更新通过 MCP 回写形成闭环",
+        ],
+        "note": "全部为比赛演示模拟数据；正式上线应通过学校 OA、教务、实训和统一身份认证接口同步。",
+    }
+
+
+@mcp.tool()
+def get_student_growth_timeline(query: str) -> dict[str, Any]:
+    """查询某学生的考勤、实训、心理筛查建议、谈话、任务和预警时间线；适用于辅导员或班主任的个案研判。"""
+    profile = get_student_profile(query)
+    student = profile["student"]
+    student_id = student["student_id"]
+    attendance = [item for item in STORE.list_records("attendance_records") if item.get("学号") == student_id]
+    training = [item for item in STORE.list_records("training_operation_records") if item.get("学号") == student_id]
+    screenings = [item for item in STORE.list_records("psychological_screenings") if item.get("学号") == student_id]
+    tasks = [item for item in support_tasks() if item.get("student_id") == student_id]
+    alerts = [item for item in STORE.list_records("risk_alerts") if item.get("student_id") == student_id]
+    timeline: list[dict[str, Any]] = []
+    for item in attendance:
+        timeline.append({"date": item.get("统计周期", ""), "type": "考勤与学业", "detail": item})
+    for item in training:
+        timeline.append({"date": item.get("记录日期", ""), "type": "实训记录", "detail": item})
+    for item in screenings:
+        timeline.append({"date": item.get("筛查日期", ""), "type": "心理筛查建议", "detail": item})
+    for item in profile["followup_records"]:
+        timeline.append({"date": item.get("created_at", ""), "type": "谈心/跟进", "detail": item})
+    for item in tasks:
+        timeline.append({"date": item.get("updated_at", item.get("created_at", "")), "type": "帮扶任务", "detail": item})
+    return {
+        "student": student,
+        "attention": {
+            "score": profile["computed_attention_score"],
+            "level": profile["computed_attention_level"],
+            "reasons": build_reasons(student),
+        },
+        "alerts": alerts,
+        "timeline": sorted(timeline, key=lambda item: item["date"], reverse=True),
+        "suggested_actions": profile["suggested_actions"],
+        "data_note": profile.get("data_note", "比赛演示模拟数据。"),
+    }
+
+
+@mcp.tool()
+def get_class_operational_records(class_name: str) -> dict[str, Any]:
+    """汇总某班的考勤、实训、筛查建议、谈心和帮扶任务动态；适用于班主任和辅导员查看班级治理台账。"""
+    normalized_class = resolve_class_name(class_name)
+    dashboard = get_class_dashboard(normalized_class)
+    student_ids = {item["student_id"] for item in students() if item["class_name"] == normalized_class}
+    if not student_ids:
+        student_ids = {item["student_id"] for item in roster_students() if item["class_name"] == normalized_class}
+    return {
+        "dashboard": dashboard,
+        "attendance_records": [item for item in STORE.list_records("attendance_records") if item.get("学号") in student_ids],
+        "training_records": [item for item in STORE.list_records("training_operation_records") if item.get("学号") in student_ids],
+        "screening_suggestions": [item for item in STORE.list_records("psychological_screenings") if item.get("学号") in student_ids],
+        "followup_records": [item for item in followups() if item.get("student_id") in student_ids],
+        "support_tasks": [item for item in support_tasks() if item.get("student_id") in student_ids],
+        "active_alerts": [item for item in STORE.list_records("risk_alerts") if item.get("student_id") in student_ids],
+        "data_note": "班级动态由项目文件夹中的比赛演示台账入库生成；个人信息应仅在已核验、授权范围内使用。",
+    }
+
+
+@mcp.tool()
+def list_followup_reminders(days: int = 14) -> dict[str, Any]:
+    """查询未来指定天数内即将到期或已逾期的谈心复访提醒，默认14天；适用于辅导员日常待办。"""
+    reminders = next_followup_reminders(STORE, days)
+    return {
+        "days": days,
+        "total": len(reminders),
+        "overdue_count": sum(1 for item in reminders if item["status"] == "已逾期"),
+        "items": reminders,
+        "note": "提醒基于比赛演示模拟谈话台账生成，正式环境应按学校工作制度和授权范围执行。",
     }
 
 
@@ -518,9 +725,18 @@ def create_followup_record(
     summary: str,
     next_action: str,
     status: str = "跟进中",
+    next_followup_date: str = "",
+    followup_cycle_months: int = 0,
 ) -> dict[str, Any]:
-    """写入一条谈心谈话或帮扶跟进记录，形成学生管理闭环。"""
+    """写入谈心谈话或帮扶跟进记录；可指定下次复访日期或按月设置复访周期，形成提醒闭环。"""
     find_student(student_id)
+    if followup_cycle_months < 0 or followup_cycle_months > 24:
+        raise ValueError("复访周期月数必须在0到24之间。")
+    safe_next_date = normalize_optional_date(next_followup_date, "下次复访日期")
+    if safe_next_date and followup_cycle_months:
+        raise ValueError("请二选一：指定下次复访日期，或填写复访周期月数。")
+    if followup_cycle_months:
+        safe_next_date = add_months(datetime.now(), followup_cycle_months)
     record = {
         "record_id": f"F{datetime.now().strftime('%Y%m%d%H%M%S')}",
         "student_id": student_id,
@@ -529,6 +745,9 @@ def create_followup_record(
         "summary": summary,
         "next_action": next_action,
         "status": status,
+        "next_followup_date": safe_next_date,
+        "followup_cycle_months": followup_cycle_months,
+        "data_label": "比赛演示模拟数据" if student_id.isdigit() else "演示治理样本",
     }
     STORE.upsert_record("followups", record["record_id"], record)
     return {"created": record}
@@ -898,6 +1117,12 @@ def get_system_readiness() -> dict[str, Any]:
             "audit_entry_count": STORE.count_audit(),
             "support_task_status": summarize_task_status(tasks),
             "overdue_task_count": sum(1 for task in tasks if is_task_overdue(task)),
+            "source_document_count": STORE.count_records("source_documents"),
+            "imported_roster_count": STORE.count_records("roster_students"),
+            "attendance_record_count": STORE.count_records("attendance_records"),
+            "training_record_count": STORE.count_records("training_operation_records"),
+            "screening_record_count": STORE.count_records("psychological_screenings"),
+            "risk_alert_count": STORE.count_records("risk_alerts"),
         },
         "dingtalk": {
             "default_group_configured": bool(
@@ -909,7 +1134,7 @@ def get_system_readiness() -> dict[str, Any]:
             "class_group_configured_count": class_webhook_count,
         },
         "recommendation": (
-            "当前使用 PostgreSQL，任务数据可跨部署保留。"
+            "当前使用 PostgreSQL，源台账入库、任务、谈话和审计数据可跨部署保留。"
             if STORE.durable_across_deploys
             else "当前使用本地 SQLite；在 Render 上应配置 DATABASE_URL 以实现跨部署持久化。"
         ),
@@ -982,7 +1207,7 @@ def get_class_dashboard(class_name: str) -> dict[str, Any]:
 
 @mcp.tool()
 def get_roster_student(query: str) -> dict[str, Any]:
-    """按学号或姓名查询真实学生名册中的基础画像。"""
+    """按学号或姓名查询比赛演示名册中的基础画像。"""
     item = find_roster_student(query)
     classmates = [
         row for row in roster_students()
@@ -992,20 +1217,20 @@ def get_roster_student(query: str) -> dict[str, Any]:
         "student": item,
         "class_size": len(classmates),
         "class_gender_distribution": count_by(classmates, "gender"),
-        "note": "该结果来自演示版真实学生名册，手机号字段为已脱敏号码。",
+        "note": "该结果来自比赛演示虚拟名册，手机号字段为已脱敏号码。",
     }
 
 
 @mcp.tool()
 def list_class_roster(class_name: str) -> dict[str, Any]:
-    """按班级查询真实名册，返回学生列表和班级基础统计。"""
+    """按班级查询比赛演示名册，返回学生列表和班级基础统计。"""
     class_name = resolve_class_name(class_name)
     rows = [
         item for item in roster_students()
         if item["class_name"] == class_name
     ]
     if not rows:
-        raise ValueError(f"未在真实名册中找到班级：{class_name}")
+        raise ValueError(f"未在比赛演示名册中找到班级：{class_name}")
     return {
         "class_name": class_name,
         "student_count": len(rows),
@@ -1026,13 +1251,13 @@ def list_class_roster(class_name: str) -> dict[str, Any]:
             ],
             key=lambda row: row["student_id"],
         ),
-        "note": "该结果来自演示版真实学生名册，手机号字段为已脱敏号码。",
+        "note": "该结果来自比赛演示虚拟名册，手机号字段为已脱敏号码。",
     }
 
 
 @mcp.tool()
 def get_roster_dashboard(scope: str = "数字技术学院") -> dict[str, Any]:
-    """生成真实名册的学院、年级、专业、班级基础分布看板。"""
+    """生成比赛演示名册的学院、年级、专业、班级基础分布看板。"""
     rows = roster_students()
     if scope:
         scoped = [
@@ -1423,6 +1648,9 @@ async def health(_request: Any) -> JSONResponse:
                 "support_tasks": STORE.count_records("support_tasks"),
                 "followups": STORE.count_records("followups"),
                 "audit_entries": STORE.count_audit(),
+                "source_documents": STORE.count_records("source_documents"),
+                "student_profiles": STORE.count_records("student_profiles"),
+                "risk_alerts": STORE.count_records("risk_alerts"),
             },
         }
     )

@@ -105,6 +105,20 @@ class SupportTaskTests(unittest.TestCase):
         self.assertEqual(audit["items"][0]["after_status"], "已完成")
         self.assertEqual(audit["items"][0]["actor"], "李老师")
 
+    def test_followup_record_can_schedule_monthly_review_reminder(self) -> None:
+        result = service.create_followup_record(
+            student_id="S004",
+            owner="辅导员",
+            summary="已完成第一次关怀谈话。",
+            next_action="三个月后完成第二次复访。",
+            followup_cycle_months=3,
+        )
+
+        record = result["created"]
+        self.assertTrue(record["next_followup_date"])
+        self.assertEqual(record["followup_cycle_months"], 3)
+        self.assertEqual(service.followups()[0]["next_followup_date"], record["next_followup_date"])
+
     def test_list_tasks_supports_overdue_and_status_summary(self) -> None:
         service.create_student_support_task(
             student_query="S002",

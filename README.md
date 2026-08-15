@@ -25,6 +25,10 @@
 | `get_support_task_audit` | 查询任务创建和状态变更审计台账 |
 | `get_system_readiness` | 只读检查存储、任务数据和钉钉渠道配置 |
 | `get_class_dashboard` | 生成班级学生状态看板数据 |
+| `get_data_ingestion_status` | 展示 Word/Excel/PDF 业务台账的文件入库状态和记录统计 |
+| `get_student_growth_timeline` | 查询学生考勤、实训、筛查建议、谈话、任务和预警时间线 |
+| `get_class_operational_records` | 查询班级动态台账和治理概览 |
+| `list_followup_reminders` | 查询即将到期或逾期的复访提醒 |
 | `generate_and_send_class_weekly_report` | 生成匿名班级周报并推送教师工作群 |
 
 ## 本地运行
@@ -42,9 +46,10 @@ python -m uvicorn student_management_mcp_sse:app --host 127.0.0.1 --port 8000
 
 ## 数据持久化
 
-- 配置 `DATABASE_URL` 时使用 PostgreSQL，任务、跟进记录和审计台账可跨 Render 部署保留。
+- 配置 `DATABASE_URL` 时使用 PostgreSQL，源台账入库、任务、跟进记录和审计台账可跨 Render 部署保留。
 - 未配置时自动使用 `.data/student_management.db` 本地 SQLite，适合开发测试，但 Render 重新部署后可能丢失。
 - 首次启用数据库时会自动迁移仓库内 `followup_records.json` 和 `support_tasks.json` 的基础数据。
+- 首次部署还会读取 `演示业务源文件` 中的 4 份 Excel、1 份 Word 和 1 份 PDF，将比赛演示名册、考勤学业、实训、筛查建议、谈话和任务记录规范化后写入数据库；后续 MCP 新增的谈话和任务会继续累积。
 - 健康检查 `/health` 会返回存储类型和记录数量，但不会返回数据库地址或钉钉密钥。
 
 PostgreSQL 连接变量示例：
@@ -54,6 +59,22 @@ DATABASE_URL=postgresql://用户名:密码@主机:5432/数据库名
 ```
 
 ## 演示数据维护
+
+`演示业务源文件` 内全部为比赛演示模拟数据，不对应真实个人。推荐的录屏主线为：
+
+```text
+工作人员维护 Excel / Word / PDF 台账
+  -> 服务自动解析并入库 PostgreSQL
+  -> 班级态势与学生成长时间线
+  -> 生成帮扶任务并回写谈话记录
+  -> 按期复访提醒与任务审计
+```
+
+可先调用 `get_data_ingestion_status` 展示文件、入库数量和数据链路，再按角色调用受控查询工具：
+
+- `get_authorized_student_growth_timeline`：学生限本人，班主任和辅导员限授权班级。
+- `get_authorized_class_operational_records`：班主任和辅导员查看授权班级动态，行政人员仅匿名聚合。
+- `list_authorized_followup_reminders`：班主任和辅导员查看授权范围内的复访待办。
 
 恢复基线数据：
 
