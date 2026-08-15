@@ -298,8 +298,36 @@ def level_from_score(score: int) -> str:
     return "低关注"
 
 
+CRISIS_SIGNAL_KEYWORDS = (
+    "自伤",
+    "伤害自己",
+    "不想活",
+    "轻生",
+    "伤人",
+    "暴力威胁",
+    "连续失联",
+)
+
+
+def has_crisis_signal(item: dict[str, Any]) -> bool:
+    """Only explicit safety signals enter the urgent offline-verification lane."""
+    text = " ".join(
+        str(item.get(field, ""))
+        for field in ("dorm_feedback", "notes")
+    )
+    return any(keyword in text for keyword in CRISIS_SIGNAL_KEYWORDS)
+
+
+def attention_level_for(item: dict[str, Any]) -> str:
+    if has_crisis_signal(item):
+        return "需立即线下核实"
+    return level_from_score(score_attention(item))
+
+
 def build_reasons(item: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
+    if has_crisis_signal(item):
+        reasons.append("出现需立即线下核实的安全信号（仅作分流提醒，非心理诊断）")
     if item["attendance_absences_30d"]:
         reasons.append(f"近30天缺勤{item['attendance_absences_30d']}次")
     if item["late_count_30d"]:
@@ -321,8 +349,13 @@ def build_reasons(item: dict[str, Any]) -> list[str]:
 
 def suggest_actions(item: dict[str, Any], score: int) -> list[str]:
     actions: list[str] = []
-    level = level_from_score(score)
-    if level == "高关注":
+    level = attention_level_for(item)
+    if level == "需立即线下核实":
+        actions.append(
+            "建议立即线下核实学生安全与实际情况，按学校应急流程联系学院学生工作负责人、心理健康教育中心或保卫部门；必要时由学校按制度联络监护人或属地应急资源。"
+        )
+        actions.append("系统仅作安全分流提醒，不作心理诊断，不替代专业评估和线下处置。")
+    elif level == "高关注":
         actions.append("建议辅导员尽快线下谈心，核实学业、生活适应、经济支持和安全事项。")
     elif level == "中关注":
         actions.append("建议一周内完成一次关怀沟通，明确学习或实训改进任务。")
@@ -448,7 +481,7 @@ def get_student_profile(query: str) -> dict[str, Any]:
     return {
         "student": item,
         "computed_attention_score": score,
-        "computed_attention_level": level_from_score(score),
+        "computed_attention_level": attention_level_for(item),
         "followup_records": related,
         "suggested_actions": suggest_actions(item, score),
     }
@@ -460,7 +493,7 @@ def list_attention_students(level: str = "") -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     for item in students():
         score = score_attention(item)
-        computed_level = level_from_score(score)
+        computed_level = attention_level_for(item)
         if level and computed_level != level:
             continue
         if not level and computed_level == "低关注":
@@ -534,8 +567,8 @@ def create_student_support_task(
     safe_created_by = created_by.strip() or "当前操作人"
     safe_due_date = normalize_due_date(due_date)
     score = score_attention(student)
-    level = level_from_score(score)
-    priority_map = {"高关注": "紧急", "中关注": "重点", "低关注": "常规"}
+    level = attention_level_for(student)
+    priority_map = {"需立即线下核实": "紧急", "高关注": "紧急", "中关注": "重点", "低关注": "常规"}
     safe_priority = priority.strip() or "自动"
     if safe_priority == "自动":
         safe_priority = priority_map[level]
@@ -892,9 +925,9 @@ def get_class_dashboard(class_name: str) -> dict[str, Any]:
     if not rows and not roster_rows:
         raise ValueError(f"未找到班级：{class_name}")
 
-    levels = {"低关注": 0, "中关注": 0, "高关注": 0}
+    levels = {"需立即线下核实": 0, "高关注": 0, "中关注": 0, "低关注": 0}
     for item in rows:
-        levels[level_from_score(score_attention(item))] += 1
+        levels[attention_level_for(item)] += 1
 
     # 班级规模优先采用授权演示名册；未纳入治理样本的学生按常规关注统计。
     roster_count = len(roster_rows)
@@ -930,12 +963,12 @@ def get_class_dashboard(class_name: str) -> dict[str, Any]:
                 {
                     "student_id": item["student_id"],
                     "name": item["name"],
-                    "level": level_from_score(score_attention(item)),
+                    "level": attention_level_for(item),
                     "reasons": build_reasons(item),
                 }
                 for item in rows
             ],
-            key=lambda row: {"高关注": 3, "中关注": 2, "低关注": 1}[row["level"]],
+            key=lambda row: {"需立即线下核实": 4, "高关注": 3, "中关注": 2, "低关注": 1}[row["level"]],
             reverse=True,
         ),
         "data_note": (
@@ -1096,9 +1129,9 @@ def generate_and_send_class_weekly_report(
     gender_distribution = count_by(roster, "gender") if roster else {}
     major_distribution = count_by(roster, "major") if roster else count_by(risk_rows, "major")
     grade_distribution = count_by(roster, "grade") if roster else count_by(risk_rows, "grade")
-    attention_levels = {"低关注": 0, "中关注": 0, "高关注": 0}
+    attention_levels = {"需立即线下核实": 0, "高关注": 0, "中关注": 0, "低关注": 0}
     for item in risk_rows:
-        attention_levels[level_from_score(score_attention(item))] += 1
+        attention_levels[attention_level_for(item)] += 1
     if roster_count > len(risk_rows):
         attention_levels["低关注"] += roster_count - len(risk_rows)
 
@@ -1117,7 +1150,7 @@ def generate_and_send_class_weekly_report(
         return "、".join(f"{name}{count}人" for name, count in data.items()) or "暂无数据"
 
     dynamic_summary = (
-        f"- 关注情况：高关注{attention_levels['高关注']}人、中关注{attention_levels['中关注']}人、"
+        f"- 关注情况：需立即线下核实{attention_levels['需立即线下核实']}人、高关注{attention_levels['高关注']}人、中关注{attention_levels['中关注']}人、"
         f"低关注{attention_levels['低关注']}人\n"
         f"- 近30天考勤：缺勤{absence_total}次、迟到{late_total}次\n"
         f"- 实训情况：日志缺项{training_missing}次、异常记录{training_issues}次\n"
