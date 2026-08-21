@@ -71,6 +71,14 @@ DEMO_IDENTITIES: dict[str, dict[str, Any]] = {
 }
 
 
+ROLE_DEMO_ACCOUNTS = {
+    "学生": "ST-60412403",
+    "班主任": "HT-S604124",
+    "辅导员": "CO-DIGITAL",
+    "行政人员": "AD-DIGITAL",
+}
+
+
 def _encode(payload: dict[str, Any]) -> str:
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     encoded = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
@@ -117,6 +125,17 @@ def verify_demo_identity(account_id: str, verification_code: str) -> dict[str, A
         "identity": {key: value for key, value in payload.items() if key not in {"exp"}},
         "note": "当前为比赛演示身份核验。生产环境请将账号校验接入学校统一身份认证，并通过平台第三方认证地址回调。",
     }
+
+
+def start_demo_role_session(role_name: str) -> dict[str, Any]:
+    """Create a short-lived demo session for one of the four portal roles."""
+    account_id = ROLE_DEMO_ACCOUNTS.get(role_name.strip())
+    if not account_id:
+        return {
+            "verified": False,
+            "message": "仅支持学生、班主任、辅导员、行政人员四类演示角色。",
+        }
+    return verify_demo_identity(account_id, DEMO_CODE)
 
 
 def require_role_session(

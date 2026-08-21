@@ -24,7 +24,11 @@ from demo_source_pipeline import (
     next_followup_reminders,
 )
 from persistent_store import PersistentStore
-from role_access import require_role_session, verify_demo_identity
+from role_access import (
+    require_role_session,
+    start_demo_role_session as start_role_demo_session,
+    verify_demo_identity,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -495,6 +499,12 @@ mcp = FastMCP(
 def verify_role_access(account_id: str, verification_code: str) -> dict[str, Any]:
     """核验比赛演示身份并签发30分钟角色令牌。账号示例：S004-DEMO、HT-S604124、CO-DIGITAL、AD-DIGITAL、OP-TRAINING。正式环境应对接学校统一身份认证。"""
     return verify_demo_identity(account_id, verification_code)
+
+
+@mcp.tool()
+def start_demo_role_session(role_name: str) -> dict[str, Any]:
+    """录屏门户已选择角色时，自动完成学生、班主任、辅导员或行政人员的演示核验，并返回短时会话令牌。正式上线应替换为学校统一身份认证。"""
+    return start_role_demo_session(role_name)
 
 
 @mcp.tool()

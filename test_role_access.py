@@ -31,6 +31,11 @@ class RoleAccessTests(unittest.TestCase):
         self.assertFalse(result["verified"])
         self.assertNotIn("session_token", result)
 
+    def test_role_can_start_a_demo_session_without_exposing_code(self) -> None:
+        result = role_access.start_demo_role_session("班主任")
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["identity"]["role"], "head_teacher")
+
 
 if __name__ == "__main__":
     unittest.main()
