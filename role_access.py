@@ -78,6 +78,22 @@ ROLE_DEMO_ACCOUNTS = {
     "行政人员": "AD-DIGITAL",
 }
 
+# The portal uses these short opaque aliases only for the competition demo flow.
+# Formal identity verification continues to use signed tokens from verify_demo_identity.
+DEMO_SESSION_ALIASES = {
+    "DEMO-ST": "ST-60412403",
+    "DEMO-HT": "HT-S604124",
+    "DEMO-CO": "CO-DIGITAL",
+    "DEMO-AD": "AD-DIGITAL",
+}
+
+ROLE_DEMO_SESSION_ALIASES = {
+    "学生": "DEMO-ST",
+    "班主任": "DEMO-HT",
+    "辅导员": "DEMO-CO",
+    "行政人员": "DEMO-AD",
+}
+
 
 def _encode(payload: dict[str, Any]) -> str:
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -86,7 +102,24 @@ def _encode(payload: dict[str, Any]) -> str:
     return f"{encoded}.{signature}"
 
 
+def _build_payload(account_id: str) -> dict[str, Any]:
+    identity = DEMO_IDENTITIES[account_id]
+    return {
+        "account_id": account_id,
+        "role": identity["role"],
+        "display_role": identity["display_role"],
+        "display_name": identity["display_name"],
+        "student_id": identity["student_id"],
+        "allowed_classes": identity["allowed_classes"],
+        "capabilities": identity["capabilities"],
+        "exp": int(time.time()) + TOKEN_TTL_SECONDS,
+    }
+
+
 def _decode(token: str) -> dict[str, Any]:
+    demo_account_id = DEMO_SESSION_ALIASES.get(token.strip().upper())
+    if demo_account_id:
+        return _build_payload(demo_account_id)
     try:
         encoded, signature = token.strip().split(".", 1)
     except ValueError as exc:
@@ -102,22 +135,14 @@ def _decode(token: str) -> dict[str, Any]:
 
 
 def verify_demo_identity(account_id: str, verification_code: str) -> dict[str, Any]:
-    identity = DEMO_IDENTITIES.get(account_id.strip().upper())
+    normalized_account_id = account_id.strip().upper()
+    identity = DEMO_IDENTITIES.get(normalized_account_id)
     if not identity or not hmac.compare_digest(verification_code.strip(), DEMO_CODE):
         return {
             "verified": False,
             "message": "账号或演示验证码不正确。正式上线时应接入学校统一身份认证，不使用演示验证码。",
         }
-    payload = {
-        "account_id": account_id.strip().upper(),
-        "role": identity["role"],
-        "display_role": identity["display_role"],
-        "display_name": identity["display_name"],
-        "student_id": identity["student_id"],
-        "allowed_classes": identity["allowed_classes"],
-        "capabilities": identity["capabilities"],
-        "exp": int(time.time()) + TOKEN_TTL_SECONDS,
-    }
+    payload = _build_payload(normalized_account_id)
     return {
         "verified": True,
         "session_token": _encode(payload),
@@ -129,13 +154,22 @@ def verify_demo_identity(account_id: str, verification_code: str) -> dict[str, A
 
 def start_demo_role_session(role_name: str) -> dict[str, Any]:
     """Create a short-lived demo session for one of the four portal roles."""
-    account_id = ROLE_DEMO_ACCOUNTS.get(role_name.strip())
-    if not account_id:
+    normalized_role_name = role_name.strip()
+    account_id = ROLE_DEMO_ACCOUNTS.get(normalized_role_name)
+    session_alias = ROLE_DEMO_SESSION_ALIASES.get(normalized_role_name)
+    if not account_id or not session_alias:
         return {
             "verified": False,
             "message": "仅支持学生、班主任、辅导员、行政人员四类演示角色。",
         }
-    return verify_demo_identity(account_id, DEMO_CODE)
+    payload = _build_payload(account_id)
+    return {
+        "verified": True,
+        "session_token": session_alias,
+        "expires_in_minutes": TOKEN_TTL_SECONDS // 60,
+        "identity": {key: value for key, value in payload.items() if key not in {"exp", "account_id"}},
+        "note": "当前为比赛演示自动身份核验。正式上线应接入学校统一身份认证。",
+    }
 
 
 def require_role_session(

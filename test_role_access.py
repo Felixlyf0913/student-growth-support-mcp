@@ -35,6 +35,11 @@ class RoleAccessTests(unittest.TestCase):
         result = role_access.start_demo_role_session("班主任")
         self.assertTrue(result["verified"])
         self.assertEqual(result["identity"]["role"], "head_teacher")
+        self.assertEqual(result["session_token"], "DEMO-HT")
+        session = role_access.require_role_session(
+            result["session_token"], ("head_teacher",), target_class_name="S604124移动"
+        )
+        self.assertEqual(session["display_role"], "班主任")
 
 
 if __name__ == "__main__":
