@@ -536,6 +536,69 @@ def get_authorized_student_profile(session_token: str, query: str) -> dict[str, 
 
 
 @mcp.tool()
+def get_my_learning_and_training_status(session_token: str) -> dict[str, Any]:
+    """学生查询本人近30天考勤、实训日志、个人待办和可执行建议；不会展示管理侧风险等级、筛查或其他学生信息。"""
+    session = require_role_session(session_token, ("student",))
+    student_id = session.get("student_id", "")
+    if not student_id:
+        raise ValueError("当前学生演示账号未绑定学生信息，请重新完成身份核验。")
+
+    profile = get_student_profile(student_id)
+    student = profile["student"]
+    training_records = [
+        item for item in STORE.list_records("training_operation_records")
+        if item.get("学号") == student_id
+    ]
+    related_tasks = [
+        item for item in support_tasks()
+        if item.get("student_id") == student_id and item.get("status") != "已关闭"
+    ]
+
+    to_do: list[str] = []
+    if int(student.get("training_log_missing", 0) or 0) > 0:
+        to_do.append(f"补齐 {student['training_log_missing']} 份实训日志，并按实训指导教师要求完成规范提交。")
+    if int(student.get("attendance_absences_30d", 0) or 0) > 0:
+        to_do.append("核对近期考勤记录；如存在误记，请按学校流程及时提交说明。")
+    if int(student.get("failed_courses", 0) or 0) > 0:
+        to_do.append("联系任课教师或学业导师，确认补考、重修或学习辅导安排。")
+    if not to_do:
+        to_do.append("当前没有待处理的考勤或实训事项，请继续保持学习和实训记录完整。")
+
+    return {
+        "student": {
+            "student_id": student["student_id"],
+            "name": student["name"],
+            "college": student["college"],
+            "major": student["major"],
+            "class_name": student["class_name"],
+        },
+        "attendance_30d": {
+            "absence_count": student.get("attendance_absences_30d", 0),
+            "late_count": student.get("late_count_30d", 0),
+            "academic_trend": student.get("gpa_trend", "未同步"),
+            "failed_course_count": student.get("failed_courses", 0),
+        },
+        "training": {
+            "missing_log_count": student.get("training_log_missing", 0),
+            "operation_issue_count": student.get("training_issue_count", 0),
+            "latest_records": training_records[:3],
+        },
+        "personal_to_do": to_do,
+        "support_progress": [
+            {
+                "task_id": item.get("task_id", ""),
+                "status": item.get("status", ""),
+                "next_action": item.get("next_action", ""),
+                "due_date": item.get("due_date", ""),
+            }
+            for item in related_tasks
+        ],
+        "privacy": "当前仅返回已核验学生本人的学习、实训和个人待办，不展示管理侧风险标签、筛查详情或其他学生信息。",
+        "data_note": "考勤和实训数据由班主任、辅导员或实训指导教师维护的比赛演示业务台账导入 PostgreSQL；正式环境应对接教务、考勤和实训系统。",
+    }
+
+
+@mcp.tool()
 def get_authorized_class_dashboard(session_token: str, class_name: str) -> dict[str, Any]:
     """按已核验角色查看班级态势。班主任和辅导员限授权班级；行政人员默认返回匿名聚合数据。"""
     normalized_class = resolve_class_name(class_name)
