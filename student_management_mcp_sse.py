@@ -508,6 +508,28 @@ def start_demo_role_session(role_name: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+def send_dingtalk_notice(
+    title: str,
+    content: str,
+    target: str = "班级群",
+    notice_type: str = "班级通知",
+    recipient_role: str = "auto",
+    at_mobiles: list[str] | None = None,
+    mention_all: bool = False,
+) -> dict[str, Any]:
+    """向钉钉班级群或教师工作群发送已确认的通知；可明确@全体或按完整手机号定向@。"""
+    return _send_dingtalk_notice_implementation(
+        title,
+        content,
+        target,
+        notice_type,
+        recipient_role,
+        at_mobiles,
+        mention_all,
+    )
+
+
+@mcp.tool()
 def get_role_access_status(session_token: str) -> dict[str, Any]:
     """查询当前已核验角色、数据范围和可用能力；不要向最终用户展示完整令牌。"""
     session = require_role_session(
@@ -1420,8 +1442,7 @@ def get_roster_dashboard(scope: str = "数字技术学院") -> dict[str, Any]:
     }
 
 
-@mcp.tool()
-def send_dingtalk_notice(
+def _send_dingtalk_notice_implementation(
     title: str,
     content: str,
     target: str = "班级群",
