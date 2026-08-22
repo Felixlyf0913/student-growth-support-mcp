@@ -708,6 +708,63 @@ def get_authorized_class_operational_records(session_token: str, class_name: str
 
 
 @mcp.tool()
+def get_authorized_counselor_overview(session_token: str) -> dict[str, Any]:
+    """辅导员查看授权班级群的学业、考勤、实训和帮扶总览，并返回需优先跟进的学生。"""
+    session = require_role_session(session_token, ("counselor",))
+    allowed_classes = list(session.get("allowed_classes", []))
+    if not allowed_classes or "*" in allowed_classes:
+        allowed_classes = sorted({item["class_name"] for item in roster_students()})
+
+    class_summaries = [get_class_dashboard(class_name) for class_name in allowed_classes]
+    priority_students: list[dict[str, Any]] = []
+    for item in students():
+        if item.get("class_name") not in allowed_classes:
+            continue
+        level = attention_level_for(item)
+        if level == "低关注":
+            continue
+        priority_students.append(
+            {
+                "student_id": item["student_id"],
+                "name": item["name"],
+                "class_name": item["class_name"],
+                "attention_level": level,
+                "attention_score": score_attention(item),
+                "key_reasons": build_reasons(item)[:4],
+                "suggested_actions": suggest_actions(item, score_attention(item))[:3],
+            }
+        )
+
+    level_order = {"需立即线下核实": 4, "高关注": 3, "中关注": 2, "低关注": 1}
+    priority_students.sort(
+        key=lambda row: (level_order[row["attention_level"]], row["attention_score"]),
+        reverse=True,
+    )
+    attention_levels = {"需立即线下核实": 0, "高关注": 0, "中关注": 0, "低关注": 0}
+    for summary in class_summaries:
+        for level, count in summary["attention_levels"].items():
+            attention_levels[level] += count
+
+    return {
+        "scope": {"role": session["display_role"], "allowed_classes": allowed_classes},
+        "college_overview": {
+            "class_count": len(class_summaries),
+            "student_count": sum(item["student_count"] for item in class_summaries),
+            "attention_levels": attention_levels,
+            "absence_total_30d": sum(item["absence_total_30d"] for item in class_summaries),
+            "training_log_missing_total": sum(item["training_log_missing_total"] for item in class_summaries),
+            "support_task_overdue_count": sum(item["support_task_overdue_count"] for item in class_summaries),
+        },
+        "class_summaries": class_summaries,
+        "priority_students": priority_students[:20],
+        "data_note": (
+            "辅导员视图汇总授权班级群的比赛演示业务台账。正式环境应由统一身份认证、"
+            "学生工作系统、教务系统和实训系统按权限实时提供数据。"
+        ),
+    }
+
+
+@mcp.tool()
 def list_authorized_followup_reminders(session_token: str, days: int = 14) -> dict[str, Any]:
     """按已核验角色查看复访提醒。班主任仅本班，辅导员仅授权班级。"""
     session = require_role_session(session_token, ("head_teacher", "counselor"))
@@ -1913,6 +1970,12 @@ def demo_student_timeline(session_token: str, query: str) -> dict[str, Any]:
 def demo_class_records(session_token: str, class_name: str) -> dict[str, Any]:
     """按已核验角色查询班级考勤、实训、谈心和帮扶动态台账。"""
     return get_authorized_class_operational_records(session_token, class_name)
+
+
+@demo_mcp.tool(name="get_authorized_counselor_overview")
+def demo_counselor_overview(session_token: str) -> dict[str, Any]:
+    """辅导员查看授权班级群的综合态势及跨班重点学生清单。"""
+    return get_authorized_counselor_overview(session_token)
 
 
 @demo_mcp.tool(name="get_my_learning_and_training_status")
