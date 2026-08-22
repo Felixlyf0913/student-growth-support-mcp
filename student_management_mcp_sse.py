@@ -497,7 +497,7 @@ mcp = FastMCP(
 # A compact service for the competition demo. Some platforms expose only a
 # limited tool window to the model, so keep the role-based workflow focused.
 demo_mcp = FastMCP(
-    "校务智枢录屏闭环 MCP 服务",
+    "校务智枢动态治理协同 MCP 服务",
     instructions=(
         "仅提供校务智枢录屏所需的角色会话、学生画像、班级动态、谈心帮扶、"
         "实训运行和已确认的钉钉通知。动态数据查询必须先建立角色会话。"
