@@ -1465,15 +1465,32 @@ def _send_dingtalk_notice_implementation(
         f"> 本消息由校务智枢智能体生成，请相关老师结合实际情况核对后执行。"
     )
     mobiles = normalize_at_mobiles(at_mobiles)
-    channel, result = send_dingtalk_markdown(
-        safe_title,
-        message,
-        target,
-        recipient_role,
-        mobiles,
-        mention_all,
-    )
+    try:
+        channel, result = send_dingtalk_markdown(
+            safe_title,
+            message,
+            target,
+            recipient_role,
+            mobiles,
+            mention_all,
+        )
+    except (RuntimeError, ValueError) as exc:
+        # Keep failures machine-readable so the agent can explain the real cause.
+        return {
+            "sent": False,
+            "target": target,
+            "channel": "",
+            "notice_type": notice_type,
+            "recipient_role": recipient_role,
+            "title": safe_title,
+            "mention_all": mention_all,
+            "mention_count": len(mobiles),
+            "dingtalk_result": {},
+            "error": str(exc),
+            "note": "钉钉通知未发送，请根据 error 字段核验群机器人配置后重试。",
+        }
     ok = result.get("errcode") == 0
+    error = "" if ok else str(result.get("errmsg") or result.get("message") or "钉钉机器人未返回成功状态")
     return {
         "sent": ok,
         "target": target,
@@ -1484,7 +1501,12 @@ def _send_dingtalk_notice_implementation(
         "mention_all": mention_all,
         "mention_count": len(mobiles),
         "dingtalk_result": result,
-        "note": "消息已自动包含钉钉安全关键词。" + ("已提醒全体成员。" if mention_all else ""),
+        "error": error,
+        "note": (
+            "消息已自动包含钉钉安全关键词。" + ("已提醒全体成员。" if mention_all else "")
+            if ok
+            else "钉钉通知未发送，请根据 error 字段核验群机器人配置后重试。"
+        ),
     }
 
 
