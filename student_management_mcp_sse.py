@@ -494,6 +494,22 @@ mcp = FastMCP(
     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
 )
 
+# A compact service for the competition demo. Some platforms expose only a
+# limited tool window to the model, so keep the role-based workflow focused.
+demo_mcp = FastMCP(
+    "校务智枢录屏闭环 MCP 服务",
+    instructions=(
+        "仅提供校务智枢录屏所需的角色会话、学生画像、班级动态、谈心帮扶、"
+        "实训运行和已确认的钉钉通知。动态数据查询必须先建立角色会话。"
+    ),
+    host="0.0.0.0",
+    port=int(os.environ.get("PORT", "8000")),
+    mount_path="/",
+    sse_path="/sse",
+    message_path="/messages/",
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+)
+
 
 @mcp.tool()
 def verify_role_access(account_id: str, verification_code: str) -> dict[str, Any]:
@@ -1865,6 +1881,95 @@ def get_class_training_operations_overview(
     }
 
 
+@demo_mcp.tool(name="start_demo_role_session")
+def demo_start_role_session(role_name: str) -> dict[str, Any]:
+    """自动建立学生、班主任、辅导员或行政人员的演示角色会话。"""
+    return start_demo_role_session(role_name)
+
+
+@demo_mcp.tool(name="send_dingtalk_notice")
+def demo_send_dingtalk_notice(
+    title: str,
+    content: str,
+    target: str = "班级群",
+    notice_type: str = "班级通知",
+    recipient_role: str = "auto",
+    at_mobiles: list[str] | None = None,
+    mention_all: bool = False,
+) -> dict[str, Any]:
+    """仅在用户确认后，向钉钉班级群或教师工作群发送通知。"""
+    return send_dingtalk_notice(
+        title, content, target, notice_type, recipient_role, at_mobiles, mention_all
+    )
+
+
+@demo_mcp.tool(name="get_authorized_student_growth_timeline")
+def demo_student_timeline(session_token: str, query: str) -> dict[str, Any]:
+    """按已核验角色查询学生考勤、实训、谈话、任务和预警时间线。"""
+    return get_authorized_student_growth_timeline(session_token, query)
+
+
+@demo_mcp.tool(name="get_authorized_class_operational_records")
+def demo_class_records(session_token: str, class_name: str) -> dict[str, Any]:
+    """按已核验角色查询班级考勤、实训、谈心和帮扶动态台账。"""
+    return get_authorized_class_operational_records(session_token, class_name)
+
+
+@demo_mcp.tool(name="get_my_learning_and_training_status")
+def demo_student_self_service(session_token: str) -> dict[str, Any]:
+    """学生查询本人近30天考勤、实训日志和个人待办。"""
+    return get_my_learning_and_training_status(session_token)
+
+
+@demo_mcp.tool(name="create_followup_record")
+def demo_create_followup(
+    student_id: str,
+    owner: str,
+    summary: str,
+    next_action: str,
+    status: str = "跟进中",
+    next_followup_date: str = "",
+    followup_cycle_months: int = 0,
+) -> dict[str, Any]:
+    """写入谈心谈话记录并建立后续复访提醒。"""
+    return create_followup_record(
+        student_id, owner, summary, next_action, status, next_followup_date, followup_cycle_months
+    )
+
+
+@demo_mcp.tool(name="create_student_support_task")
+def demo_create_support_task(
+    student_query: str,
+    owner: str,
+    due_date: str,
+    requirements_confirmed: bool = False,
+    created_by: str = "当前操作人",
+    objective: str = "",
+    measures: list[str] | None = None,
+    priority: str = "自动",
+) -> dict[str, Any]:
+    """在负责人和具体截止日期明确后创建学生帮扶任务。"""
+    return create_student_support_task(
+        student_query, owner, due_date, requirements_confirmed, created_by, objective, measures, priority
+    )
+
+
+@demo_mcp.tool(name="get_class_training_operations_overview")
+def demo_training_operations(
+    class_name: str,
+    start_date: str = "",
+    end_date: str = "",
+) -> dict[str, Any]:
+    """查看班级实训排课、异常设备和安全整改待办。"""
+    return get_class_training_operations_overview(class_name, start_date, end_date)
+
+
+@demo_mcp.tool(name="get_data_ingestion_status")
+def demo_ingestion_status() -> dict[str, Any]:
+    """查询业务源台账已导入 PostgreSQL 的文件和记录数量。"""
+    return get_data_ingestion_status()
+
+
 async def health(_request: Any) -> JSONResponse:
     return JSONResponse(
         {
@@ -1891,6 +1996,7 @@ async def health(_request: Any) -> JSONResponse:
 app = Starlette(
     routes=[
         Route("/health", health, methods=["GET"]),
+        Mount("/demo", app=demo_mcp.sse_app()),
         Mount("/", app=mcp.sse_app()),
     ]
 )
